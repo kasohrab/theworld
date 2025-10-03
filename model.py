@@ -5,13 +5,44 @@ from transformers import Gemma3ForConditionalGeneration, AutoProcessor
 from PIL import Image
 import numpy as np
 
+
 class TheWorld(nn.Module):
-    def __init__(self, gemma_model_name, device="cuda", num_world_steps=0, max_world_steps=16):
+    def __init__(
+        self,
+        gemma_model_name,
+        device="cuda",
+        num_world_steps=0,
+        max_world_steps=16,
+        freeze_gemma_vision=True,
+        freeze_gemma_language=True,
+        freeze_cosmos_vae=True,
+    ):
+        """
+        TheWorld: Fused vision-language-world model combining Gemma 3 and Cosmos.
+
+        Args:
+            gemma_model_name: HuggingFace model ID for Gemma 3
+            device: Device to load models on
+            num_world_steps: Default number of future frames to predict (0 = current only)
+            max_world_steps: Maximum frames for temporal embeddings
+            freeze_gemma_vision: If True, freeze Gemma's vision encoder (SigLIP) [default: True]
+            freeze_gemma_language: If True, freeze Gemma's language model [default: True]
+            freeze_cosmos_vae: If True, freeze Cosmos VAE encoder [default: True]
+
+        Trainable components (by default):
+            - temporal_embedding: Distinguishes between timesteps
+            - world_projection: Projects Cosmos latents to Gemma dimension
+        """
         super(TheWorld, self).__init__()
 
         self.device = device
         self.num_world_steps = num_world_steps  # How many future frames to predict (0 = current frame only)
         self.max_world_steps = max_world_steps  # Maximum for temporal embeddings
+
+        # Store freeze configuration
+        self.freeze_gemma_vision = freeze_gemma_vision
+        self.freeze_gemma_language = freeze_gemma_language
+        self.freeze_cosmos_vae = freeze_cosmos_vae
 
         # --- 1. Load the full Cosmos Pipeline to access all components ---
         # https://arxiv.org/pdf/2503.15558 Their own reasoning model doesn't even use world model!
@@ -40,13 +71,6 @@ class TheWorld(nn.Module):
             local_files_only=True,
         )
 
-        # Freeze Cosmos VAE encoder
-        for param in self.cosmos_vae_encoder.parameters():
-            param.requires_grad = False
-        # Freeze Gemma
-        for param in self.gemma.parameters():
-            param.requires_grad = False
-
         # Get the output dimensions from the Cosmos encoder and Gemma
         # We use the true latent space dimension (z_dim=16), not the encoder output (32)
         # See docs/world_model_latent_space.md for explanation
@@ -61,6 +85,57 @@ class TheWorld(nn.Module):
         # Create projection layer for world model embeddings -> Gemma
         self.world_projection = nn.Linear(cosmos_img_dim, gemma_dim, dtype=torch.bfloat16).to(device)
 
+        # Apply freezing configuration (after all components are created)
+        self._apply_freezing()
+
+    def _apply_freezing(self):
+        """Apply freezing configuration to model components."""
+        # Freeze Cosmos components
+        if self.freeze_cosmos_vae:
+            # Freeze all Cosmos components
+            for component_name in self.cosmos_pipe.components:
+                component = self.cosmos_pipe.components[component_name]
+                if component is not None and hasattr(component, "parameters"):
+                    for param in component.parameters():
+                        param.requires_grad = False
+        else:
+            # Unfreeze only VAE encoder (for world model latent training)
+            # Keep transformer/scheduler/etc frozen
+            if hasattr(self.cosmos_pipe, "vae"):
+                for param in self.cosmos_pipe.vae.encoder.parameters():
+                    param.requires_grad = True
+                # Keep decoder frozen even when training encoder
+                for param in self.cosmos_pipe.vae.decoder.parameters():
+                    param.requires_grad = False
+
+        # Freeze Gemma components
+        if self.freeze_gemma_vision:
+            # Freeze vision tower (SigLIP encoder)
+            if hasattr(self.gemma, "model") and hasattr(self.gemma.model, "vision_tower"):
+                for param in self.gemma.model.vision_tower.parameters():
+                    param.requires_grad = False
+
+        if self.freeze_gemma_language:
+            # Freeze language model layers
+            if hasattr(self.gemma, "model") and hasattr(self.gemma.model, "language_model"):
+                for param in self.gemma.model.language_model.parameters():
+                    param.requires_grad = False
+            # Also freeze LM head
+            if hasattr(self.gemma, "lm_head"):
+                for param in self.gemma.lm_head.parameters():
+                    param.requires_grad = False
+
+        # Projection layers are always trainable (not frozen)
+        for param in self.temporal_embedding.parameters():
+            param.requires_grad = True
+        for param in self.world_projection.parameters():
+            param.requires_grad = True
+
+    def get_trainable_parameters(self):
+        """Return count and percentage of trainable parameters."""
+        trainable = sum(p.numel() for p in self.parameters() if p.requires_grad)
+        total = sum(p.numel() for p in self.parameters())
+        return trainable, total, 100 * trainable / total
 
     def forward(self, input_pixels, text, labels=None, num_world_steps=None):
         # input_pixels: PIL Image, numpy array (H,W,C), or torch.Tensor (B,C,H,W)
@@ -105,8 +180,8 @@ class TheWorld(nn.Module):
                     "role": "user",
                     "content": [
                         {"type": "image", "image": pil_image},  # Pass PIL image directly
-                        {"type": "text", "text": text_prompt}
-                    ]
+                        {"type": "text", "text": text_prompt},
+                    ],
                 }
             ]
 
@@ -116,7 +191,7 @@ class TheWorld(nn.Module):
                 add_generation_prompt=False,  # No generation prompt for embeddings
                 tokenize=True,
                 return_tensors="pt",
-                return_dict=True  # Return dict with input_ids, attention_mask, etc.
+                return_dict=True,  # Return dict with input_ids, attention_mask, etc.
             )
 
             # Move inputs to the device where Gemma's embedding layer is
@@ -148,7 +223,7 @@ class TheWorld(nn.Module):
                     num_frames=1 + num_world_steps,
                     num_inference_steps=10,
                     output_type="latent",
-                    return_dict=True
+                    return_dict=True,
                 )
                 latent_img_embeds = output.frames
 
@@ -172,20 +247,39 @@ class TheWorld(nn.Module):
         target_device = gemma_vision_embeds.device
         projected_world_embeds = projected_world_embeds.to(target_device)
 
-        combined_embeds = torch.cat([
-            gemma_vision_embeds,      # Gemma's vision understanding
-            projected_world_embeds    # Cosmos world dynamics (already includes text from processor)
-        ], dim=1)
+        combined_embeds = torch.cat(
+            [
+                gemma_vision_embeds,  # Gemma's vision understanding
+                projected_world_embeds,  # Cosmos world dynamics (already includes text from processor)
+            ],
+            dim=1,
+        )
 
         # 4. Create attention mask for all tokens
         gemma_attention_mask = gemma_inputs["attention_mask"].to(target_device)
         world_attention_mask = torch.ones(projected_world_embeds.size()[:2], dtype=torch.long, device=target_device)
         combined_attention_mask = torch.cat([gemma_attention_mask, world_attention_mask], dim=1)
 
-        # 5. Forward through Gemma with combined vision understanding
-        outputs = self.gemma(
-            inputs_embeds=combined_embeds,
-            attention_mask=combined_attention_mask,
-            labels=labels
-        )
+        # 5. Prepare labels for training (if provided)
+        if labels is not None:
+            # Labels should align with combined_embeds sequence
+            # Structure: [Gemma vision + text tokens | Cosmos world tokens]
+            # Only compute loss on Gemma text tokens, not vision or world tokens
+            num_gemma_tokens = gemma_vision_embeds.size(1)
+            num_world_tokens = projected_world_embeds.size(1)
+
+            # Pad labels to match combined sequence length
+            # -100 = ignore index (no loss computed for these tokens)
+            labels = torch.cat(
+                [
+                    gemma_inputs["input_ids"].to(target_device),  # Gemma vision + text
+                    torch.full(
+                        (labels.size(0), num_world_tokens), -100, dtype=torch.long, device=target_device
+                    ),  # World tokens (ignored)
+                ],
+                dim=1,
+            )
+
+        # 6. Forward through Gemma with combined vision understanding
+        outputs = self.gemma(inputs_embeds=combined_embeds, attention_mask=combined_attention_mask, labels=labels)
         return outputs
