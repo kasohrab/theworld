@@ -1,0 +1,96 @@
+=== FULL GEMMA MODEL ===
+
+Gemma2ForCausalLM(
+  (model): Gemma2Model(
+    (embed_tokens): Embedding(256000, 2304, padding_idx=0)
+    (layers): ModuleList(
+      (0-25): 26 x Gemma2DecoderLayer(
+        (self_attn): Gemma2Attention(
+          (q_proj): Linear(in_features=2304, out_features=2048, bias=False)
+          (k_proj): Linear(in_features=2304, out_features=1024, bias=False)
+          (v_proj): Linear(in_features=2304, out_features=1024, bias=False)
+          (o_proj): Linear(in_features=2048, out_features=2304, bias=False)
+        )
+        (mlp): Gemma2MLP(
+          (gate_proj): Linear(in_features=2304, out_features=9216, bias=False)
+          (up_proj): Linear(in_features=2304, out_features=9216, bias=False)
+          (down_proj): Linear(in_features=9216, out_features=2304, bias=False)
+          (act_fn): PytorchGELUTanh()
+        )
+        (input_layernorm): Gemma2RMSNorm((2304,), eps=1e-06)
+        (post_attention_layernorm): Gemma2RMSNorm((2304,), eps=1e-06)
+        (pre_feedforward_layernorm): Gemma2RMSNorm((2304,), eps=1e-06)
+        (post_feedforward_layernorm): Gemma2RMSNorm((2304,), eps=1e-06)
+      )
+    )
+    (norm): Gemma2RMSNorm((2304,), eps=1e-06)
+    (rotary_emb): Gemma2RotaryEmbedding()
+  )
+  (lm_head): Linear(in_features=2304, out_features=256000, bias=False)
+)
+
+=== GEMMA CONFIG ===
+
+Gemma2Config {
+  "architectures": [
+    "Gemma2ForCausalLM"
+  ],
+  "attention_bias": false,
+  "attention_dropout": 0.0,
+  "attn_logit_softcapping": 50.0,
+  "bos_token_id": 2,
+  "cache_implementation": "hybrid",
+  "dtype": "bfloat16",
+  "eos_token_id": [
+    1,
+    107
+  ],
+  "final_logit_softcapping": 30.0,
+  "head_dim": 256,
+  "hidden_act": "gelu_pytorch_tanh",
+  "hidden_activation": "gelu_pytorch_tanh",
+  "hidden_size": 2304,
+  "initializer_range": 0.02,
+  "intermediate_size": 9216,
+  "layer_types": [
+    "sliding_attention",
+    "full_attention",
+    "sliding_attention",
+    "full_attention",
+    "sliding_attention",
+    "full_attention",
+    "sliding_attention",
+    "full_attention",
+    "sliding_attention",
+    "full_attention",
+    "sliding_attention",
+    "full_attention",
+    "sliding_attention",
+    "full_attention",
+    "sliding_attention",
+    "full_attention",
+    "sliding_attention",
+    "full_attention",
+    "sliding_attention",
+    "full_attention",
+    "sliding_attention",
+    "full_attention",
+    "sliding_attention",
+    "full_attention",
+    "sliding_attention",
+    "full_attention"
+  ],
+  "max_position_embeddings": 8192,
+  "model_type": "gemma2",
+  "num_attention_heads": 8,
+  "num_hidden_layers": 26,
+  "num_key_value_heads": 4,
+  "pad_token_id": 0,
+  "query_pre_attn_scalar": 256,
+  "rms_norm_eps": 1e-06,
+  "rope_theta": 10000.0,
+  "sliding_window": 4096,
+  "transformers_version": "4.56.2",
+  "use_cache": true,
+  "vocab_size": 256000
+}
