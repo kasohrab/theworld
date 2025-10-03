@@ -2,11 +2,11 @@
 
 # Format code with black
 format:
-	uv run black *.py
+	uv run black python/*.py
 
 # Check formatting without modifying files
 check:
-	uv run black --check *.py
+	uv run black --check python/*.py
 
 # Install dependencies including dev tools
 install:
@@ -14,11 +14,11 @@ install:
 
 # Run inference example
 run:
-	uv run main.py
+	uv run python/main.py
 
 # Run training example
 train:
-	uv run train.py
+	uv run python/train.py
 
 # Clean cache and temporary files
 clean:

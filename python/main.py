@@ -1,5 +1,6 @@
 import torch
 from model import TheWorld
+from generation import greedy_decode
 import os
 
 
@@ -30,6 +31,13 @@ def main():
     print(f"  - Includes: Gemma vision tokens + Cosmos world tokens + text")
     print(f"  - Total context: {outputs_single.logits.shape[1]} tokens")
 
+    # Decode next token prediction
+    next_token_id, next_token_text = greedy_decode(outputs_single, model.processor.tokenizer)
+    print(f"\n  Next token prediction:")
+    print(f"    Token ID: {next_token_id}")
+    print(f"    Decoded: '{next_token_text}'")
+    print(f"    (Greedy decoding - highest probability token)")
+
     # Example 2: Multi-step rollout (4 future frames)
     print("\n" + "=" * 60)
     print("Example 2: Multi-step rollout (predict 4 future frames)")
@@ -45,6 +53,12 @@ def main():
     print(f"  - Total context: {outputs_multi.logits.shape[1]} tokens")
     print(f"  - Frames: 1 (input) + 4 (predicted future)")
 
+    # Decode next token prediction
+    next_token_id, next_token_text = greedy_decode(outputs_multi, model.processor.tokenizer)
+    print(f"\n  Next token prediction (with temporal context):")
+    print(f"    Token ID: {next_token_id}")
+    print(f"    Decoded: '{next_token_text}'")
+
     # Example 3: Override rollout at inference time
     print("\n" + "=" * 60)
     print("Example 3: Override rollout length at inference time")
@@ -56,6 +70,12 @@ def main():
     print(f"✓ Output shape: {outputs_override.logits.shape}")
     print(f"  - Cosmos world: ~2352 tokens (3 frames × 28×28)")
     print(f"  - Frames: 1 (input) + 2 (predicted future)")
+
+    # Decode next token prediction
+    next_token_id, next_token_text = greedy_decode(outputs_override, model.processor.tokenizer)
+    print(f"\n  Next token prediction:")
+    print(f"    Token ID: {next_token_id}")
+    print(f"    Decoded: '{next_token_text}'")
 
     print("\n" + "=" * 60)
     print("All examples completed successfully!")
