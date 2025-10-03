@@ -225,52 +225,68 @@ class TheWorld(nn.Module):
         # ========================================
         # STEP 2: Create chat template with bracket tokens
         # ========================================
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "<the_world_start> <the_world_end>"},  # Bracket markers
+                    {"type": "image", "image": pil_image},  # Image will be processed by SigLIP
+                    {"type": "text", "text": text_prompt},  # User prompt
+                ],
+            }
+        ]
+
+        # Apply chat template - this handles image token insertion automatically
+        gemma_inputs = self.processor.apply_chat_template(
+            messages,
+            add_generation_prompt=False,  # No generation prompt for embeddings
+            tokenize=True,
+            return_tensors="pt",
+            return_dict=True,  # Returns input_ids, attention_mask, pixel_values, etc.
+        )
+
+        # Move inputs to the device where Gemma is
+        target_device = self.gemma.get_input_embeddings().weight.device
+        gemma_inputs = {k: v.to(target_device) for k, v in gemma_inputs.items()}
+
+        # ========================================
+        # STEP 3: Manually construct input embeddings with vision features
+        # ========================================
+        # This replicates what Gemma3Model.forward() does internally (modeling_gemma3.py:826-956),
+        # but we do it manually so we can inject world embeddings before the language model processes them.
+        # By doing this, world embeddings flow through ALL transformer layers alongside vision and text.
+        input_ids = gemma_inputs["input_ids"]
+        pixel_values = gemma_inputs["pixel_values"]
+
+        # 3a. Get text token embeddings (image tokens are placeholders at this point)
+        # Reference: Gemma3Model.forward() line 887-888
+        inputs_embeds = self.gemma.model.language_model.embed_tokens(input_ids)
+
+        # 3b. Process vision through SigLIP + multi-modal projector
+        # Reference: Gemma3Model.forward() line 897-903
         with torch.no_grad():
-            messages = [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": "<the_world_start> <the_world_end>"},  # Bracket markers
-                        {"type": "image", "image": pil_image},  # Image will be processed by SigLIP
-                        {"type": "text", "text": text_prompt},  # User prompt
-                    ],
-                }
-            ]
+            # Line 898: image_features = self.get_image_features(pixel_values)
+            image_features = self.gemma.model.get_image_features(pixel_values)
+            # Line 899: image_features = image_features.to(inputs_embeds.device, inputs_embeds.dtype)
+            image_features = image_features.to(inputs_embeds.device, inputs_embeds.dtype)
 
-            # Apply chat template - this handles image token insertion automatically
-            gemma_inputs = self.processor.apply_chat_template(
-                messages,
-                add_generation_prompt=False,  # No generation prompt for embeddings
-                tokenize=True,
-                return_tensors="pt",
-                return_dict=True,  # Returns input_ids, attention_mask, pixel_values, etc.
+            # 3c. Replace image token placeholders with real SigLIP vision features
+            # Reference: Line 900-903 in Gemma3Model.forward()
+            # Line 900-902: special_image_mask = self.get_placeholder_mask(...)
+            special_image_mask = self.gemma.model.get_placeholder_mask(
+                input_ids, inputs_embeds=inputs_embeds, image_features=image_features
             )
+            # Line 903: inputs_embeds = inputs_embeds.masked_scatter(special_image_mask, image_features)
+            inputs_embeds = inputs_embeds.masked_scatter(special_image_mask, image_features)
 
-            # Move inputs to the device where Gemma is
-            target_device = self.gemma.get_input_embeddings().weight.device
-            gemma_inputs = {k: v.to(target_device) for k, v in gemma_inputs.items()}
-
-            # ========================================
-            # STEP 3: Process through Gemma.model() to get embeddings with vision encoded
-            # ========================================
-            # This runs SigLIP vision encoder on pixel_values automatically
-            gemma_outputs = self.gemma.model(
-                input_ids=gemma_inputs["input_ids"],
-                pixel_values=gemma_inputs["pixel_values"],
-                attention_mask=gemma_inputs["attention_mask"],
-                token_type_ids=gemma_inputs.get("token_type_ids"),
-                output_hidden_states=True,
-                return_dict=True,
-            )
-
-            # Get embeddings from first layer (includes real vision features from SigLIP)
-            embeddings = gemma_outputs.hidden_states[0]  # [B, seq_len, 2560]
+        # Now inputs_embeds contains: [text tokens + real vision features from SigLIP + text tokens]
+        # This is equivalent to what Gemma3Model produces before calling language_model (line 937)
+        embeddings = inputs_embeds  # [B, seq_len, 2560]
 
         # ========================================
         # STEP 4: Insert world embeddings between bracket tokens
         # ========================================
-        # Find bracket positions
-        input_ids = gemma_inputs["input_ids"]
+        # Find bracket positions (input_ids already extracted above)
         start_positions = (input_ids == self.world_start_id).nonzero(as_tuple=True)[1]
         end_positions = (input_ids == self.world_end_id).nonzero(as_tuple=True)[1]
 
@@ -301,9 +317,7 @@ class TheWorld(nn.Module):
                 [attention_mask_before, world_attention_mask, attention_mask_after], dim=1
             )
         else:
-            # No brackets found (shouldn't happen, but safety)
-            combined_embeds = embeddings
-            combined_attention_mask = gemma_inputs["attention_mask"]
+            assert False, "No world brackets found (shouldn't happen, but safety)"
 
         # ========================================
         # STEP 6: Prepare labels for training (if provided)
@@ -315,24 +329,30 @@ class TheWorld(nn.Module):
             num_world = projected_world_embeds.size(1)
 
             # Create labels: -100 for all non-text tokens
-            labels_before = gemma_inputs["input_ids"][:, :num_before_start].to(target_device)
+            labels_before = input_ids[:, :num_before_start].to(target_device)
             labels_world = torch.full((b, num_world), -100, dtype=torch.long, device=target_device)
-            labels_after = gemma_inputs["input_ids"][:, end_pos:].to(target_device)
+            labels_after = input_ids[:, end_pos:].to(target_device)
 
             combined_labels = torch.cat([labels_before, labels_world, labels_after], dim=1)
         else:
             combined_labels = None
 
         # ========================================
-        # STEP 7: Forward through language model and LM head
+        # STEP 7: Forward through language model (single pass with world embeddings)
         # ========================================
-        # Forward through language model layers
+        # Now we pass combined_embeds (vision + world + text) through the language model.
+        # This is a SINGLE pass where world embeddings flow through ALL transformer layers.
+        # Reference: Gemma3Model.forward() line 937-948 calls language_model with inputs_embeds
         lm_outputs = self.gemma.language_model(
             inputs_embeds=combined_embeds,
             attention_mask=combined_attention_mask,
             return_dict=True,
         )
 
+        # ========================================
+        # STEP 8: Apply LM head and compute loss
+        # ========================================
+        # Reference: Gemma3ForConditionalGeneration.forward() line 1094-1119
         hidden_states = lm_outputs.last_hidden_state
 
         # Apply LM head to get logits
@@ -341,13 +361,15 @@ class TheWorld(nn.Module):
         # Compute loss if labels provided
         loss = None
         if combined_labels is not None:
-            # Shift labels for next-token prediction
-            shift_logits = logits[..., :-1, :].contiguous()
+            # Upcast to float if we need to compute the loss to avoid potential precision issues
+            logits_float = logits.float()
+            # Shift so that tokens < n predict n
+            shift_logits = logits_float[..., :-1, :].contiguous()
             shift_labels = combined_labels[..., 1:].contiguous()
-            # Flatten for loss computation
-            loss_fct = torch.nn.CrossEntropyLoss()
+            # Flatten the tokens
+            loss_fct = nn.CrossEntropyLoss()
             shift_logits = shift_logits.view(-1, self.gemma.config.text_config.vocab_size)
-            shift_labels = shift_labels.view(-1)
+            shift_labels = shift_labels.view(-1).to(shift_logits.device)
             loss = loss_fct(shift_logits, shift_labels)
 
         # Return in compatible format
@@ -357,6 +379,6 @@ class TheWorld(nn.Module):
             loss=loss,
             logits=logits,
             past_key_values=lm_outputs.past_key_values,
-            hidden_states=lm_outputs.hidden_states if lm_outputs.hidden_states else None,
-            attentions=lm_outputs.attentions if lm_outputs.attentions else None,
+            hidden_states=lm_outputs.hidden_states if hasattr(lm_outputs, "hidden_states") else None,
+            attentions=lm_outputs.attentions if hasattr(lm_outputs, "attentions") else None,
         )
