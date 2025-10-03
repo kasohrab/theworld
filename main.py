@@ -3,48 +3,73 @@ from model import TheWorld
 import os
 
 def main():
-    # Set device - configurable via environment variable
-    device = os.getenv("DEVICE", "cpu")
+    # Set device
+    device = "cuda"
     print(f"Using device: {device}")
 
-    # Initialize model (tokenizer is loaded inside TheWorld)
-    model = TheWorld("google/gemma-2-2b-it", device=device)
+    # Create a single model instance
+    print("\n" + "="*60)
+    print("Loading model...")
+    print("="*60)
 
-    # Dump models to files
-    with open("cosmos_full_model.txt", "w") as f:
-        f.write("=== FULL COSMOS PIPELINE ===\n\n")
-        f.write(str(model.cosmos_pipe))
-        f.write("\n\n=== COSMOS VAE ===\n\n")
-        f.write(str(model.cosmos_pipe.vae))
-        f.write("\n\n=== COSMOS VAE ENCODER ===\n\n")
-        f.write(str(model.cosmos_vae_encoder))
-        f.write("\n\n=== COSMOS VAE CONFIG ===\n\n")
-        f.write(str(model.cosmos_pipe.vae.config))
+    model = TheWorld("google/gemma-3-4b-it", device=device, num_world_steps=4)
 
-    with open("gemma_full_model.txt", "w") as f:
-        f.write("=== FULL GEMMA MODEL ===\n\n")
-        f.write(str(model.gemma))
-        f.write("\n\n=== GEMMA CONFIG ===\n\n")
-        f.write(str(model.gemma.config))
-
-    print("Models dumped to cosmos_full_model.txt and gemma_full_model.txt")
-
-    # Create sample inputs
-    # Image input: random tensor simulating an image (1, 3, 224, 224)
-    input_pixels = torch.randn(1, 3, 224, 224)
-
-    # Text input: sample question using Gemma's tokenizer
+    input_pixels = torch.randn(1, 3, 896, 896)  # Gemma 3 uses 896x896
     text = "What is in this image?"
-    text_inputs = model.tokenizer(text, return_tensors="pt", padding=True)
-    input_ids = text_inputs.input_ids
-    text_attention_mask = text_inputs.attention_mask
 
-    # Run forward pass
-    print("Running forward pass...")
-    outputs = model.forward(input_pixels, input_ids, text_attention_mask)
+    # Example 1: Single-step (no rollout) - Fast inference
+    print("\n" + "="*60)
+    print("Example 1: Single-step world model (no future prediction)")
+    print("="*60)
 
-    print(f"Output logits shape: {outputs.logits.shape}")
-    print("Forward pass completed successfully!")
+    print("Running single-step forward pass (override to 0 steps)...")
+    outputs_single = model.forward(input_pixels, text, num_world_steps=0)
+
+    print(f"✓ Output shape: {outputs_single.logits.shape}")
+    print(f"  - Includes: Gemma vision tokens + Cosmos world tokens + text")
+    print(f"  - Total context: {outputs_single.logits.shape[1]} tokens")
+
+    # Example 2: Multi-step rollout (4 future frames)
+    print("\n" + "="*60)
+    print("Example 2: Multi-step rollout (predict 4 future frames)")
+    print("="*60)
+
+    print("Running multi-step forward pass (predicting 4 future frames)...")
+    print("This will take longer as Cosmos generates future states...")
+    outputs_multi = model.forward(input_pixels, text)  # Uses default num_world_steps=4
+
+    print(f"✓ Output shape: {outputs_multi.logits.shape}")
+    print(f"  - Gemma vision: 256 tokens (896x896 at 14px patches)")
+    print(f"  - Cosmos world: ~3920 tokens (5 frames × 28×28)")
+    print(f"  - Total context: {outputs_multi.logits.shape[1]} tokens")
+    print(f"  - Frames: 1 (input) + 4 (predicted future)")
+
+    # Example 3: Override rollout at inference time
+    print("\n" + "="*60)
+    print("Example 3: Override rollout length at inference time")
+    print("="*60)
+
+    print("Model initialized with num_world_steps=4, but overriding to 2...")
+    outputs_override = model.forward(
+        input_pixels,
+        text,
+        num_world_steps=2  # Override to predict only 2 future frames
+    )
+
+    print(f"✓ Output shape: {outputs_override.logits.shape}")
+    print(f"  - Cosmos world: ~2352 tokens (3 frames × 28×28)")
+    print(f"  - Frames: 1 (input) + 2 (predicted future)")
+
+    print("\n" + "="*60)
+    print("All examples completed successfully!")
+    print("="*60)
+    print("\nKey features:")
+    print("  - Dual vision: Gemma's SigLIP + Cosmos world model")
+    print("  - Gemma provides: static visual understanding (objects, scenes)")
+    print("  - Cosmos provides: temporal dynamics (motion, physics, future states)")
+    print("\nSee docs/ for details:")
+    print("  - autoregressive_world_rollout.md: How rollout works")
+    print("  - world_model_latent_space.md: Cosmos latent extraction")
 
 
 if __name__ == "__main__":
