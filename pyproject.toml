@@ -12,3 +12,12 @@ dependencies = [
     "torchvision>=0.23.0",
     "transformers>=4.56.2",
 ]
+
+[dependency-groups]
+dev = [
+    "black>=24.0.0",
+]
+
+[tool.black]
+line-length = 120
+target-version = ["py312"]
