@@ -1,6 +1,6 @@
 import torch
-from model import TheWorld
-from generation import greedy_decode
+from theworld import TheWorld
+from theworld.generation import greedy_decode
 import os
 
 

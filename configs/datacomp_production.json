@@ -1,0 +1,55 @@
+{
+  "_comment": "Production configuration for DataComp-1B with streaming (full 1.4B samples)",
+
+  "model_name": "google/gemma-3-4b-it",
+  "cosmos_model_name": "nvidia/Cosmos-Predict2-2B-Video2World",
+  "num_world_steps": 0,
+  "max_world_steps": 16,
+  "freeze_gemma_vision": true,
+  "freeze_gemma_language": true,
+  "freeze_cosmos_vae": true,
+
+  "learning_rate": 0.0001,
+  "batch_size": 4,
+  "gradient_accumulation_steps": 4,
+  "num_epochs": 1,
+  "warmup_steps": 500,
+  "weight_decay": 0.01,
+  "max_grad_norm": 1.0,
+
+  "use_gradient_checkpointing": false,
+  "mixed_precision": "bf16",
+
+  "output_dir": "./checkpoints/datacomp_production",
+  "save_steps": 1000,
+  "save_total_limit": 5,
+  "resume_from_checkpoint": null,
+
+  "eval_steps": 5000,
+  "eval_batch_size": 4,
+  "do_eval": true,
+
+  "logging_steps": 100,
+  "log_to_wandb": true,
+  "wandb_project": "theworld-datacomp",
+  "wandb_run_name": "projection-only-1b",
+  "log_to_tensorboard": true,
+
+  "max_seq_length": 2048,
+  "num_workers": 4,
+  "train_dataset_path": null,
+  "eval_dataset_path": null,
+
+  "dataset_name": "datacomp",
+  "num_samples": null,
+  "streaming": true,
+  "question_template": "Describe this image simply.",
+
+  "hf_token": null,
+  "push_to_hub": true,
+  "hub_model_id": null,
+  "hub_strategy": "every_save",
+  "hub_private_repo": false,
+
+  "device": "cuda"
+}

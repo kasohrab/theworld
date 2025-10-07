@@ -1,5 +1,5 @@
 import torch
-from model import TheWorld
+from theworld import TheWorld
 from PIL import Image
 import numpy as np
 
