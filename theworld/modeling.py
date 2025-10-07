@@ -4,30 +4,39 @@ from diffusers import Cosmos2VideoToWorldPipeline
 from transformers import Gemma3ForConditionalGeneration, AutoProcessor
 from PIL import Image
 import numpy as np
+from huggingface_hub import hf_hub_download
+import os
 
 
 class TheWorld(nn.Module):
     def __init__(
         self,
         gemma_model_name,
+        cosmos_model_name="nvidia/Cosmos-Predict2-2B-Video2World",
         device="cuda",
         num_world_steps=0,
         max_world_steps=16,
         freeze_gemma_vision=True,
         freeze_gemma_language=True,
         freeze_cosmos_vae=True,
+        random_projection_init=False,
     ):
         """
         TheWorld: Fused vision-language-world model combining Gemma 3 and Cosmos.
 
         Args:
-            gemma_model_name: HuggingFace model ID for Gemma 3
+            gemma_model_name: HuggingFace model ID for Gemma/PaliGemma vision-language model
+            cosmos_model_name: HuggingFace model ID for Cosmos world model
+                               (2B: nvidia/Cosmos-Predict2-2B-Video2World,
+                                7B: nvidia/Cosmos-Predict2-7B-Video2World,
+                                14B: nvidia/Cosmos-Predict2-14B-Video2World)
             device: Device to load models on
             num_world_steps: Default number of future frames to predict (0 = current only)
             max_world_steps: Maximum frames for temporal embeddings
             freeze_gemma_vision: If True, freeze Gemma's vision encoder (SigLIP) [default: True]
             freeze_gemma_language: If True, freeze Gemma's language model [default: True]
             freeze_cosmos_vae: If True, freeze Cosmos VAE encoder [default: True]
+            random_projection_init: If True, randomly initialize projection layer (for ablation) [default: False]
 
         Trainable components (by default):
             - temporal_embedding: Distinguishes between timesteps
@@ -38,6 +47,11 @@ class TheWorld(nn.Module):
         self.device = device
         self.num_world_steps = num_world_steps  # How many future frames to predict (0 = current frame only)
         self.max_world_steps = max_world_steps  # Maximum for temporal embeddings
+        self.random_projection_init = random_projection_init  # For ablation studies
+
+        # Store model names for checkpointing
+        self.gemma_model_name = gemma_model_name
+        self.cosmos_model_name = cosmos_model_name
 
         # Store freeze configuration
         self.freeze_gemma_vision = freeze_gemma_vision
@@ -47,9 +61,10 @@ class TheWorld(nn.Module):
         # --- 1. Load the full Cosmos Pipeline to access all components ---
         # https://arxiv.org/pdf/2503.15558 Their own reasoning model doesn't even use world model!
         self.cosmos_pipe: Cosmos2VideoToWorldPipeline = Cosmos2VideoToWorldPipeline.from_pretrained(
-            "nvidia/Cosmos-Predict2-2B-Video2World",
+            cosmos_model_name,
             torch_dtype=torch.bfloat16,
             safety_checker=None,
+            requires_safety_checker=False,
             low_cpu_mem_usage=True,
             local_files_only=True,
         )
@@ -85,6 +100,13 @@ class TheWorld(nn.Module):
         # Create projection layer for world model embeddings -> Gemma
         self.world_projection = nn.Linear(cosmos_img_dim, gemma_dim, dtype=torch.bfloat16).to(device)
 
+        # Optionally reinitialize with random weights (for ablation studies)
+        if random_projection_init:
+            nn.init.xavier_uniform_(self.world_projection.weight)
+            if self.world_projection.bias is not None:
+                nn.init.zeros_(self.world_projection.bias)
+            print("⚠ Projection layer randomly initialized (ablation mode)")
+
         # Add bracket special tokens for world model embeddings
         special_tokens = {"additional_special_tokens": ["<the_world_start>", "<the_world_end>"]}
         num_added = self.processor.tokenizer.add_special_tokens(special_tokens)
@@ -94,6 +116,11 @@ class TheWorld(nn.Module):
         # Store token IDs for use in forward pass
         self.world_start_id = self.processor.tokenizer.convert_tokens_to_ids("<the_world_start>")
         self.world_end_id = self.processor.tokenizer.convert_tokens_to_ids("<the_world_end>")
+
+        # Expose device map from Gemma to TheWorld (for HuggingFace Trainer compatibility)
+        # This prevents Trainer from trying to move the model when device_map="auto" is used
+        if hasattr(self.gemma, "hf_device_map"):
+            self.hf_device_map = self.gemma.hf_device_map
 
         # Apply freezing configuration (after all components are created)
         self._apply_freezing()
@@ -143,6 +170,201 @@ class TheWorld(nn.Module):
         trainable = sum(p.numel() for p in self.parameters() if p.requires_grad)
         total = sum(p.numel() for p in self.parameters())
         return trainable, total, 100 * trainable / total
+
+    def enable_gradient_checkpointing(self):
+        """Enable gradient checkpointing for memory-efficient training.
+
+        This reduces activation memory by 4-8x at the cost of 30-40% slower training.
+        Only beneficial when training large portions of the model.
+        """
+        # Enable for Gemma language model (if unfrozen)
+        if not self.freeze_gemma_language:
+            if hasattr(self.gemma, "gradient_checkpointing_enable"):
+                self.gemma.gradient_checkpointing_enable()
+                print("✓ Gradient checkpointing enabled for Gemma language model")
+            elif hasattr(self.gemma, "enable_gradient_checkpointing"):
+                self.gemma.enable_gradient_checkpointing()
+                print("✓ Gradient checkpointing enabled for Gemma language model")
+
+        # Enable for Cosmos VAE encoder (if unfrozen)
+        if not self.freeze_cosmos_vae:
+            if hasattr(self.cosmos_vae_encoder, "gradient_checkpointing_enable"):
+                self.cosmos_vae_encoder.gradient_checkpointing_enable()
+                print("✓ Gradient checkpointing enabled for Cosmos VAE encoder")
+            elif hasattr(self.cosmos_vae_encoder, "enable_gradient_checkpointing"):
+                self.cosmos_vae_encoder.enable_gradient_checkpointing()
+                print("✓ Gradient checkpointing enabled for Cosmos VAE encoder")
+
+    def save_checkpoint(self, path: str, optimizer=None, epoch: int = None, step: int = None, **kwargs):
+        """Save training checkpoint with trainable parameters and optimizer state.
+
+        Args:
+            path: Path to save checkpoint (.pt file)
+            optimizer: Optional optimizer to save state
+            epoch: Current epoch number
+            step: Current training step
+            **kwargs: Additional metadata to save
+
+        Example:
+            >>> model.save_checkpoint("checkpoint.pt", optimizer=optimizer, epoch=5)
+        """
+        checkpoint = {
+            "model_state_dict": {},
+            "freeze_config": {
+                "freeze_gemma_vision": self.freeze_gemma_vision,
+                "freeze_gemma_language": self.freeze_gemma_language,
+                "freeze_cosmos_vae": self.freeze_cosmos_vae,
+            },
+            "model_config": {
+                "gemma_model_name": self.gemma_model_name,
+                "cosmos_model_name": self.cosmos_model_name,
+                "num_world_steps": self.num_world_steps,
+                "max_world_steps": self.max_world_steps,
+            },
+            "epoch": epoch,
+            "step": step,
+            **kwargs,
+        }
+
+        # Save only trainable parameters (much smaller checkpoint)
+        for name, param in self.named_parameters():
+            if param.requires_grad:
+                checkpoint["model_state_dict"][name] = param.data.cpu()
+
+        # Save optimizer state
+        if optimizer is not None:
+            checkpoint["optimizer_state_dict"] = optimizer.state_dict()
+
+        torch.save(checkpoint, path)
+        print(f"✓ Checkpoint saved to {path}")
+
+    def load_checkpoint(self, path: str, optimizer=None, strict: bool = False):
+        """Load training checkpoint and resume training.
+
+        Args:
+            path: Path to checkpoint file
+            optimizer: Optional optimizer to load state into
+            strict: Whether to strictly enforce all keys match
+
+        Returns:
+            Dictionary with epoch and step if available
+
+        Example:
+            >>> info = model.load_checkpoint("checkpoint.pt", optimizer=optimizer)
+            >>> print(f"Resuming from epoch {info['epoch']}")
+        """
+        checkpoint = torch.load(path, map_location=self.device)
+
+        # Load trainable parameters
+        missing, unexpected = self.load_state_dict(checkpoint["model_state_dict"], strict=strict)
+
+        if missing and strict:
+            print(f"⚠ Missing keys: {missing}")
+        if unexpected and strict:
+            print(f"⚠ Unexpected keys: {unexpected}")
+
+        # Load optimizer state
+        if optimizer is not None and "optimizer_state_dict" in checkpoint:
+            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+            print("✓ Optimizer state loaded")
+
+        print(f"✓ Checkpoint loaded from {path}")
+
+        return {"epoch": checkpoint.get("epoch", 0), "step": checkpoint.get("step", 0)}
+
+    @classmethod
+    def from_pretrained(
+        cls,
+        model_id: str,
+        checkpoint_name: str = "pytorch_model.bin",
+        device: str = "cuda",
+        hf_token: str = None,
+    ):
+        """Load a trained TheWorld model from HuggingFace Hub.
+
+        Args:
+            model_id: HuggingFace Hub model ID (e.g., "username/theworld-datacomp")
+            checkpoint_name: Name of checkpoint file to load (default: "pytorch_model.bin")
+                            Can also use "checkpoint-1000/pytorch_model.bin" for specific checkpoint
+            device: Device to load model on (default: "cuda")
+            hf_token: HuggingFace API token for private models
+
+        Returns:
+            TheWorld model instance with loaded weights
+
+        Example:
+            >>> model = TheWorld.from_pretrained("username/theworld-datacomp")
+            >>> outputs = model.generate(image, "What is in this image?")
+
+            # Load specific checkpoint
+            >>> model = TheWorld.from_pretrained(
+            ...     "username/theworld-datacomp",
+            ...     checkpoint_name="checkpoint-1000/pytorch_model.bin"
+            ... )
+        """
+        print(f"Downloading checkpoint from HuggingFace Hub: {model_id}")
+
+        # Download checkpoint file from Hub
+        checkpoint_path = hf_hub_download(
+            repo_id=model_id,
+            filename=checkpoint_name,
+            token=hf_token,
+        )
+
+        # Load checkpoint to extract configuration
+        checkpoint = torch.load(checkpoint_path, map_location="cpu")
+
+        # Extract model configuration
+        model_config = checkpoint.get("model_config", {})
+        freeze_config = checkpoint.get("freeze_config", {})
+
+        # Get model names from checkpoint
+        gemma_model_name = model_config.get("gemma_model_name", "google/gemma-3-4b-it")
+        cosmos_model_name = model_config.get("cosmos_model_name", "nvidia/Cosmos-Predict2-2B-Video2World")
+        num_world_steps = model_config.get("num_world_steps", 0)
+        max_world_steps = model_config.get("max_world_steps", 16)
+
+        # Get freeze configuration
+        freeze_gemma_vision = freeze_config.get("freeze_gemma_vision", True)
+        freeze_gemma_language = freeze_config.get("freeze_gemma_language", True)
+        freeze_cosmos_vae = freeze_config.get("freeze_cosmos_vae", True)
+
+        print(f"Initializing TheWorld model with:")
+        print(f"  Gemma: {gemma_model_name}")
+        print(f"  Cosmos: {cosmos_model_name}")
+        print(f"  num_world_steps: {num_world_steps}")
+        print(f"  max_world_steps: {max_world_steps}")
+
+        # Initialize model with configuration from checkpoint
+        model = cls(
+            gemma_model_name=gemma_model_name,
+            cosmos_model_name=cosmos_model_name,
+            device=device,
+            num_world_steps=num_world_steps,
+            max_world_steps=max_world_steps,
+            freeze_gemma_vision=freeze_gemma_vision,
+            freeze_gemma_language=freeze_gemma_language,
+            freeze_cosmos_vae=freeze_cosmos_vae,
+        )
+
+        # Load trainable parameters
+        print("Loading checkpoint weights...")
+        missing, unexpected = model.load_state_dict(checkpoint["model_state_dict"], strict=False)
+
+        if missing:
+            print(f"⚠ Missing keys (expected for frozen components): {len(missing)} keys")
+        if unexpected:
+            print(f"⚠ Unexpected keys: {unexpected}")
+
+        print(f"✓ Model loaded from {model_id}")
+
+        # Get training info if available
+        epoch = checkpoint.get("epoch")
+        step = checkpoint.get("step")
+        if epoch is not None or step is not None:
+            print(f"  Checkpoint info: epoch={epoch}, step={step}")
+
+        return model
 
     def forward(self, input_pixels, text, labels=None, num_world_steps=None):
         # input_pixels: PIL Image, numpy array (H,W,C), or torch.Tensor (B,C,H,W)
@@ -382,3 +604,130 @@ class TheWorld(nn.Module):
             hidden_states=lm_outputs.hidden_states if hasattr(lm_outputs, "hidden_states") else None,
             attentions=lm_outputs.attentions if hasattr(lm_outputs, "attentions") else None,
         )
+
+    def _prepare_image(self, image):
+        """Convert image to appropriate format for model."""
+        if isinstance(image, Image.Image):
+            return image.convert("RGB")
+        elif isinstance(image, np.ndarray):
+            return Image.fromarray(image).convert("RGB")
+        elif isinstance(image, torch.Tensor):
+            if image.ndim == 4:
+                image = image[0]  # Take first if batched
+            img_np = image.permute(1, 2, 0).cpu().numpy()
+            if img_np.max() <= 1.0:
+                img_np = (img_np * 255).astype(np.uint8)
+            return Image.fromarray(img_np).convert("RGB")
+        else:
+            raise ValueError(f"Unsupported image type: {type(image)}")
+
+    def generate(
+        self,
+        image,
+        prompt: str,
+        max_new_tokens: int = 50,
+        temperature: float = 0.0,
+        num_world_steps: int = None,
+        skip_world_tokens: bool = False,
+        **kwargs,
+    ) -> str:
+        """
+        Generate text response for image and prompt.
+
+        Args:
+            image: Input image (PIL, numpy, or tensor)
+            prompt: Text prompt/question
+            max_new_tokens: Maximum tokens to generate
+            temperature: Sampling temperature (0 = greedy)
+            num_world_steps: Override number of world steps (None = use default)
+            skip_world_tokens: If True, completely skip world model (ablation mode)
+            **kwargs: Additional generation parameters
+
+        Returns:
+            Generated text response
+        """
+        # Use default num_world_steps if not specified
+        if num_world_steps is None:
+            num_world_steps = self.num_world_steps
+
+        # Prepare image
+        pil_image = self._prepare_image(image)
+
+        # Format with chat template
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": pil_image},
+                    {"type": "text", "text": prompt},
+                ],
+            }
+        ]
+
+        # Process inputs with Gemma processor
+        inputs = self.processor.apply_chat_template(
+            messages,
+            tokenize=True,
+            add_generation_prompt=True,
+            return_tensors="pt",
+        )
+
+        # Move to device
+        if hasattr(inputs, "to"):
+            inputs = inputs.to(self.gemma.device)
+        elif isinstance(inputs, dict):
+            inputs = {k: v.to(self.gemma.device) if hasattr(v, "to") else v for k, v in inputs.items()}
+
+        # For ablation: skip world tokens entirely
+        if skip_world_tokens:
+            # Use Gemma directly without world model
+            with torch.no_grad():
+                if temperature == 0.0:
+                    outputs = self.gemma.generate(
+                        **inputs,
+                        max_new_tokens=max_new_tokens,
+                        do_sample=False,
+                        pad_token_id=self.processor.tokenizer.pad_token_id,
+                    )
+                else:
+                    outputs = self.gemma.generate(
+                        **inputs,
+                        max_new_tokens=max_new_tokens,
+                        do_sample=True,
+                        temperature=temperature,
+                        pad_token_id=self.processor.tokenizer.pad_token_id,
+                    )
+        else:
+            # Use TheWorld forward pass (includes world tokens)
+            # Note: This is a simplified implementation
+            # For full generation, we'd need to implement autoregressive decoding
+            # For now, delegate to Gemma's generate with world embeddings
+            # TODO: Implement proper autoregressive generation with world tokens
+            from transformers import GenerationConfig
+
+            generation_config = GenerationConfig(
+                max_new_tokens=max_new_tokens,
+                do_sample=(temperature > 0),
+                temperature=temperature if temperature > 0 else 1.0,
+                pad_token_id=self.processor.tokenizer.pad_token_id,
+                eos_token_id=self.processor.tokenizer.eos_token_id,
+            )
+
+            # For now, use Gemma's generate (this is a limitation - doesn't fully use world tokens)
+            # A proper implementation would require custom generation loop
+            with torch.no_grad():
+                outputs = self.gemma.generate(
+                    **inputs,
+                    generation_config=generation_config,
+                )
+
+        # Decode output (skip input tokens)
+        if isinstance(inputs, dict) and "input_ids" in inputs:
+            input_len = inputs["input_ids"].shape[1]
+        else:
+            input_len = inputs.shape[1]
+
+        generated_ids = outputs[:, input_len:]
+        response = self.processor.decode(generated_ids[0], skip_special_tokens=True)
+
+        return response.strip()

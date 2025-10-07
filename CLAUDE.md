@@ -47,12 +47,40 @@ Output: Language model logits for next token prediction
 ## Running Commands
 
 ### Setup
+
+**One-Command Setup (Recommended):**
+```bash
+# Automated setup script - handles everything
+make setup
+
+# Or run directly:
+bash scripts/setup.sh
+```
+
+This script automatically:
+- Installs all dependencies (core + dev tools)
+- Installs Cosmos safety checker (cosmos_guardrail)
+- Creates necessary directories (checkpoints/, logs/)
+- Verifies installation
+- Checks for HuggingFace token
+
+**Manual Setup:**
 ```bash
 # Install dependencies (uses uv package manager)
 uv sync
 
-# Install with dev dependencies (includes black formatter)
+# Install with dev dependencies (includes black formatter, wandb, tensorboard)
 uv sync --dev
+
+# Install Cosmos safety checker (required for Cosmos pipeline)
+uv pip install cosmos_guardrail
+```
+
+**Setup Script Options:**
+```bash
+bash scripts/setup.sh --help         # Show help
+bash scripts/setup.sh --skip-dev     # Skip dev tools (faster)
+bash scripts/setup.sh --skip-models  # Skip model caching
 ```
 
 ### Development
@@ -66,8 +94,11 @@ make check
 # Run inference example (demonstrates 3 scenarios)
 make run
 
-# Run training setup (demonstrates e2e forward/backward)
-make train
+# Run simple training demo (forward/backward pass demonstration)
+make train-simple
+
+# Run production training with HuggingFace Trainer
+make train-hf
 
 # Clean cache and temporary files
 make clean
@@ -75,9 +106,26 @@ make clean
 
 ### Model Usage
 
-**Inference:**
+**Loading from HuggingFace Hub:**
 ```python
-from model import TheWorld
+from theworld import TheWorld
+
+# Load a trained model from Hub (for inference or continued training)
+model = TheWorld.from_pretrained("username/theworld-datacomp")
+
+# Use for inference
+response = model.generate(image, "What is in this image?")
+
+# Load specific checkpoint
+model = TheWorld.from_pretrained(
+    "username/theworld-datacomp",
+    checkpoint_name="checkpoint-1000/pytorch_model.bin"
+)
+```
+
+**Initializing new model:**
+```python
+from theworld import TheWorld
 
 # Single-step (current frame only, fastest)
 model = TheWorld("google/gemma-3-4b-it", num_world_steps=0)
@@ -91,8 +139,16 @@ outputs = model.forward(image, text, num_world_steps=8)
 
 **Training Configuration:**
 ```python
+from theworld import TheWorld
+
 # Train only projection layers (default, 0.07% params)
 model = TheWorld("google/gemma-3-4b-it")
+
+# Use a different Cosmos model variant
+model = TheWorld(
+    "google/gemma-3-4b-it",
+    cosmos_model_name="nvidia/Cosmos-Predict2-2B-Video2World"
+)
 
 # Train VAE encoder + projections
 model = TheWorld("google/gemma-3-4b-it", freeze_cosmos_vae=False)
@@ -204,13 +260,37 @@ Remove `local_files_only=True` on first run to download models.
 
 ```
 theworld/
-├── model.py           # TheWorld class - main model architecture
-├── main.py            # Inference examples (3 scenarios)
-├── train.py           # Training setup example
-├── docs/
-│   ├── world_model_latent_space.md      # Cosmos latent extraction details
-│   └── autoregressive_world_rollout.md  # Temporal prediction architecture
-└── pyproject.toml     # Dependencies (uv)
+├── theworld/                           # Core package
+│   ├── __init__.py                    # Package exports
+│   ├── modeling.py                    # TheWorld model class
+│   ├── generation.py                  # Text generation utilities
+│   ├── config.py                      # TrainingConfig dataclass
+│   ├── data.py                        # Dataset + collator for HF Trainer
+│   ├── hub_utils.py                   # HuggingFace Hub utilities (model cards)
+│   └── datasets/                      # Dataset loaders
+│       ├── __init__.py
+│       └── datacomp.py                # DataComp-1B dataset loader
+├── examples/                           # Simple examples and demos
+│   ├── inference.py                   # Inference demo (3 scenarios)
+│   ├── simple_training.py             # Basic training demo (forward/backward)
+│   └── load_from_hub.py              # Load model from HuggingFace Hub
+├── scripts/                            # Production scripts
+│   └── train_hf.py                    # HuggingFace Trainer-based training
+├── configs/                            # Training configurations
+│   ├── default.json                   # Default training config
+│   ├── datacomp_test.json            # DataComp quick test (100 samples)
+│   └── datacomp_production.json      # DataComp production (streaming)
+├── docs/                               # Documentation
+│   ├── world_model_latent_space.md   # Cosmos latent extraction details
+│   ├── autoregressive_world_rollout.md  # Temporal prediction architecture
+│   ├── training_infrastructure_design.md  # Training design doc
+│   ├── deepspeed_zero_analysis.md    # DeepSpeed ZeRO analysis
+│   ├── huggingface_hub_upload.md     # HuggingFace Hub upload guide
+│   ├── multi_stage_training.md       # Multi-stage/progressive training guide
+│   └── loss_function_and_evaluation.md  # Loss function & evaluation metrics
+├── pyproject.toml                      # Dependencies (uv)
+├── Makefile                            # Development commands
+└── CLAUDE.md                           # Project guidance (this file)
 ```
 
 ## Common Development Patterns
@@ -250,6 +330,227 @@ Expected percentages:
 - + Gemma vision: ~30%
 - + Gemma language: ~50%
 
+## Training with HuggingFace Trainer
+
+### Quick Start
+
+**Simple training (projection layers only):**
+```bash
+# Uses default config (configs/default.json)
+make train-hf
+```
+
+**Custom configuration:**
+```bash
+# Create custom config
+cp configs/default.json configs/my_config.json
+# Edit configs/my_config.json with your settings
+
+# Train with custom config
+python scripts/train_hf.py --config configs/my_config.json
+```
+
+### Training Configuration
+
+Edit `configs/default.json` or create a new config file:
+
+```json
+{
+  "model_name": "google/gemma-3-4b-it",
+  "cosmos_model_name": "nvidia/Cosmos-Predict2-2B-Video2World",
+  "num_world_steps": 0,
+
+  "freeze_gemma_vision": true,
+  "freeze_gemma_language": true,
+  "freeze_cosmos_vae": true,
+
+  "learning_rate": 0.0001,
+  "batch_size": 4,
+  "gradient_accumulation_steps": 4,
+  "num_epochs": 3,
+
+  "use_gradient_checkpointing": false,
+  "mixed_precision": "bf16",
+
+  "output_dir": "./checkpoints",
+  "save_steps": 500,
+  "log_to_wandb": false,
+
+  "push_to_hub": false,
+  "hub_model_id": "your-username/theworld-model"
+}
+```
+
+**Key Configuration Options:**
+
+- `model_name`: HuggingFace model ID for Gemma 3 (e.g., `google/gemma-3-4b-it`)
+- `cosmos_model_name`: HuggingFace model ID for Cosmos (e.g., `nvidia/Cosmos-Predict2-2B-Video2World`)
+- `dataset_name`: Dataset to use (`"datacomp"`, `"custom"`, etc.)
+- `push_to_hub`: Upload checkpoints to HuggingFace Hub (see [Hub Upload Guide](docs/huggingface_hub_upload.md))
+- `hub_model_id`: Repository name on Hub (e.g., `"username/theworld-datacomp"`)
+- `output_dir`: Local directory for checkpoints (default: `./checkpoints`)
+
+### Implementing Your Dataset
+
+You must implement the `load_datasets()` function in `scripts/train_hf.py`:
+
+```python
+from theworld import TheWorldDataset, HFDatasetWrapper
+from datasets import load_dataset
+
+def load_datasets(config):
+    # Option 1: Use HuggingFace datasets
+    hf_dataset = load_dataset("your_dataset")
+    train_dataset = HFDatasetWrapper(
+        hf_dataset["train"],
+        image_key="image",
+        text_key="question",
+        label_key="answer"
+    )
+
+    # Option 2: Custom data
+    train_data = [
+        {
+            "image": "path/to/image.jpg",  # or PIL Image
+            "text": "What is this?",
+            "label": "A cat"
+        },
+        # ... more examples
+    ]
+    train_dataset = TheWorldDataset(train_data)
+
+    return train_dataset, eval_dataset
+```
+
+### Gradient Checkpointing
+
+For training large portions of the model (e.g., unfreezing Gemma language model):
+
+```json
+{
+  "use_gradient_checkpointing": true,
+  "freeze_gemma_language": false
+}
+```
+
+Benefits:
+- Reduces activation memory by 4-8×
+- Enables training on smaller GPUs (24GB instead of 40GB+)
+- Cost: 30-40% slower training
+
+### Checkpoint Management
+
+**Automatic checkpointing:**
+```json
+{
+  "output_dir": "./checkpoints",
+  "save_steps": 500,           // Save every 500 steps
+  "save_total_limit": 3        // Keep only last 3 checkpoints
+}
+```
+
+**Resume from checkpoint:**
+```bash
+# From local checkpoint
+python scripts/train_hf.py --resume_from checkpoints/checkpoint-1000
+
+# From HuggingFace Hub
+python scripts/train_hf.py --resume_from username/theworld-datacomp
+```
+
+**Manual save/load:**
+```python
+from theworld import TheWorld
+
+model = TheWorld("google/gemma-3-4b-it")
+optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+
+# Save checkpoint
+model.save_checkpoint("my_checkpoint.pt", optimizer=optimizer, epoch=5)
+
+# Load checkpoint
+info = model.load_checkpoint("my_checkpoint.pt", optimizer=optimizer)
+print(f"Resuming from epoch {info['epoch']}")
+```
+
+### Logging
+
+**TensorBoard (default):**
+```bash
+# Start training (logs saved to ./checkpoints/logs)
+make train-hf
+
+# View in TensorBoard
+tensorboard --logdir checkpoints/logs
+```
+
+**Weights & Biases:**
+```json
+{
+  "log_to_wandb": true,
+  "wandb_project": "theworld-training",
+  "wandb_run_name": "projection-only-v1"
+}
+```
+
+### HuggingFace Hub Upload
+
+Automatically upload checkpoints to the HuggingFace Hub during training:
+
+```json
+{
+  "push_to_hub": true,
+  "hub_model_id": "your-username/theworld-datacomp",
+  "hub_strategy": "every_save",
+  "hub_private_repo": false,
+  "hf_token": null
+}
+```
+
+**Provide your HuggingFace token:**
+```bash
+# Environment variable (recommended)
+export HF_TOKEN="hf_your_token_here"
+python scripts/train_hf.py --config configs/datacomp_production.json
+
+# Or via command line
+python scripts/train_hf.py --hf_token hf_your_token_here
+```
+
+**Hub upload features:**
+- Automatic checkpoint uploads during training
+- Auto-generated model card with training details
+- Public or private repositories
+- Version control for checkpoints
+
+See [HuggingFace Hub Upload Guide](docs/huggingface_hub_upload.md) for detailed instructions.
+
+### Distributed Training
+
+HuggingFace Trainer automatically handles distributed training:
+
+```bash
+# Single GPU
+python scripts/train_hf.py
+
+# Multi-GPU (DDP)
+torchrun --nproc_per_node=4 scripts/train_hf.py
+
+# Multi-node
+# See HuggingFace Accelerate documentation
+```
+
+### Memory Optimization Strategies
+
+| Scenario | Config | Memory/GPU | Speed |
+|----------|--------|------------|-------|
+| **Projection only** | Default | 20-24GB | Fast |
+| **+ Vision encoder** | `freeze_gemma_vision=false` | 35-40GB | Medium |
+| **+ Vision + GradChkpt** | + `use_gradient_checkpointing=true` | 25-30GB | Slower |
+| **Full model** | All `false` + checkpointing | 56-60GB | Slow |
+
+For full model training beyond single GPU capacity, see `docs/deepspeed_zero_analysis.md` for DeepSpeed ZeRO strategies.
+
 ## Architecture Notes
 
 ### Why This Fusion Works
@@ -265,9 +566,13 @@ Default configuration freezes everything except the projection layers. This is a
 - Add temporal position information via learned embeddings
 
 For domain-specific tasks, consider unfreezing components in this order:
-1. Start: Train projection only (fastest, 0.07% params)
-2. Next: Unfreeze Gemma vision for domain-specific visual features
-3. Last: Unfreeze language model only if task differs drastically from pre-training
+1. **Stage 1**: Train projection only (fastest, 0.07% params, ~20-24GB VRAM)
+2. **Stage 2**: Unfreeze Gemma vision for domain-specific visual features (~30% params, ~35-40GB VRAM)
+3. **Stage 3**: Unfreeze language model for task-specific generation (~50% params, ~56-60GB VRAM with gradient checkpointing)
+
+**Multi-stage training** allows you to progressively unfreeze components, starting fast and cheap with projection-only, then expanding only if needed. Each stage resumes from the previous checkpoint seamlessly.
+
+See [Multi-Stage Training Guide](docs/multi_stage_training.md) for detailed workflow, configuration examples, and best practices.
 
 ### Known Limitations
 
@@ -275,6 +580,53 @@ For domain-specific tasks, consider unfreezing components in this order:
 - Single-step mode (num_world_steps=0) is much faster than multi-step
 - Memory usage scales with num_world_steps (each frame adds ~784 tokens)
 - Currently only supports single image input (no video sequences yet)
+
+## Loss Function and Evaluation
+
+**Training objective:** Causal language modeling (next-token prediction)
+- Cross-entropy loss on text tokens only (vision/world tokens masked with -100)
+- Projection layer learns to map Cosmos → Gemma embedding space
+
+**Evaluation strategy:** Compare against baselines to measure world model contribution:
+1. Gemma3 baseline (no world model)
+2. Random projection (tests if pretrained Cosmos helps)
+3. World token ablation (tests if world tokens contribute)
+
+See [Evaluation Guide](docs/evaluation.md) for quick start and [Loss Function Details](docs/loss_function_and_evaluation.md) for mathematical formulation.
+
+## Evaluation
+
+**Quick evaluation commands:**
+```bash
+# Evaluate TheWorld on BLINK
+make eval-blink MODEL=username/theworld-datacomp
+
+# Evaluate Gemma baseline
+make eval-gemma
+
+# Compare results
+make compare-results
+```
+
+**Manual evaluation:**
+```bash
+# TheWorld on BLINK Relative_Depth
+python scripts/evaluate_blink.py \
+  --task Relative_Depth \
+  --model username/theworld-datacomp \
+  --num_world_steps 0,4
+
+# Interactive demo
+python scripts/inference_demo.py \
+  --model username/theworld-datacomp \
+  --task Relative_Depth
+```
+
+See [Evaluation Guide](docs/evaluation.md) for:
+- Baseline comparisons (Gemma3, random projection, ablation)
+- BLINK benchmark details
+- Metrics interpretation
+- Troubleshooting
 
 ## References
 

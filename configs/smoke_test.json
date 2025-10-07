@@ -1,0 +1,62 @@
+{
+  "_comment": "Smoke test - 2 samples, 2 steps, tests entire pipeline in ~3 minutes",
+  "_usage": "export HF_TOKEN=hf_your_token && python scripts/train_hf.py --config configs/smoke_test.json",
+
+  "model_name": "google/gemma-3-4b-it",
+  "cosmos_model_name": "nvidia/Cosmos-Predict2-2B-Video2World",
+  "num_world_steps": 0,
+  "max_world_steps": 16,
+
+  "freeze_gemma_vision": true,
+  "freeze_gemma_language": true,
+  "freeze_cosmos_vae": true,
+
+  "learning_rate": 0.0001,
+  "batch_size": 1,
+  "gradient_accumulation_steps": 1,
+  "num_epochs": 1,
+  "warmup_steps": 0,
+  "weight_decay": 0.01,
+  "max_grad_norm": 1.0,
+
+  "use_gradient_checkpointing": false,
+  "mixed_precision": "bf16",
+
+  "output_dir": "./checkpoints/smoke_test",
+  "save_steps": 1,
+  "save_total_limit": 1,
+  "resume_from_checkpoint": null,
+
+  "eval_steps": null,
+  "eval_batch_size": null,
+  "do_eval": false,
+
+  "logging_steps": 1,
+  "log_to_wandb": false,
+  "wandb_project": null,
+  "wandb_run_name": null,
+  "log_to_tensorboard": false,
+
+  "max_seq_length": 2048,
+  "num_workers": 2,
+  "train_dataset_path": null,
+  "eval_dataset_path": null,
+
+  "dataset_name": "datacomp",
+  "num_samples": 2,
+  "streaming": true,
+  "question_template": "Describe this image simply.",
+
+  "hf_token": null,
+  "push_to_hub": true,
+  "hub_model_id": "kasohrab/theworld-smoke-test",
+  "hub_strategy": "every_save",
+  "hub_private_repo": true,
+
+  "device": "cuda",
+
+  "_note_num_samples": "Just 2 samples to test pipeline quickly",
+  "_note_save_steps": "Save after each step to verify checkpointing works",
+  "_note_hub_private_repo": "Keep private for testing, delete after verification",
+  "_note_expected_time": "~3 minutes total (30s loading + 2x60s training + 30s upload)"
+}
