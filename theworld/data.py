@@ -215,6 +215,8 @@ def theworld_collate_fn(
         "attention_mask": attention_mask,
         "pixel_values": pixel_values,
         "labels": combined_labels,
+        "images": images,  # Raw PIL images for Cosmos processing
+        "texts": texts,    # Raw text prompts for Cosmos processing
     }
 
 

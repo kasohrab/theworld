@@ -8,6 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 1. **Always use Makefile commands** when available instead of running `uv run` directly
 2. **Always run `make format`** after completing code changes before marking tasks as done
 3. Run `make check` to verify formatting before committing
+4. **Run smoke test first** after setup to verify everything works: `make smoke-test`
 
 ## Project Overview
 
@@ -102,6 +103,31 @@ make train-hf
 
 # Clean cache and temporary files
 make clean
+```
+
+### Smoke Test
+
+**Quick verification** that your setup works correctly (recommended after initial setup):
+
+```bash
+# Set your HuggingFace token (required for downloading models)
+export HF_TOKEN=hf_your_token_here
+
+# Run smoke test (2 samples, ~3 minutes)
+make smoke-test
+```
+
+The smoke test:
+- Trains on just 2 samples from DataComp-1B
+- Tests the entire pipeline (model loading, training, checkpointing, Hub upload)
+- Completes in ~3 minutes
+- Uploads to a private Hub repo for verification
+- Uses config: `configs/smoke_test.json`
+
+**Alternative (without make):**
+```bash
+export HF_TOKEN=hf_your_token_here
+python scripts/train_hf.py --config configs/smoke_test.json
 ```
 
 ### Model Usage
@@ -278,8 +304,10 @@ theworld/
 │   └── train_hf.py                    # HuggingFace Trainer-based training
 ├── configs/                            # Training configurations
 │   ├── default.json                   # Default training config
+│   ├── smoke_test.json               # Smoke test (2 samples, ~3 min verification)
 │   ├── datacomp_test.json            # DataComp quick test (100 samples)
-│   └── datacomp_production.json      # DataComp production (streaming)
+│   ├── datacomp_production.json      # DataComp production (streaming)
+│   └── eval_blink.json               # BLINK benchmark evaluation config
 ├── docs/                               # Documentation
 │   ├── world_model_latent_space.md   # Cosmos latent extraction details
 │   ├── autoregressive_world_rollout.md  # Temporal prediction architecture

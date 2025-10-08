@@ -38,7 +38,7 @@
   "log_to_tensorboard": false,
 
   "max_seq_length": 2048,
-  "num_workers": 2,
+  "num_workers": 0,
   "train_dataset_path": null,
   "eval_dataset_path": null,
 

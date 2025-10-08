@@ -32,7 +32,7 @@ def download_image(url: str, timeout: int = 5, max_retries: int = 3) -> Optional
             response.raise_for_status()
             image = Image.open(BytesIO(response.content)).convert("RGB")
             return image
-        except Exception as e:
+        except Exception:
             if attempt == max_retries - 1:
                 # All retries failed
                 return None
@@ -136,9 +136,6 @@ class DataCompDataset(TorchDataset):
                 item = self.hf_dataset[try_idx]
                 result = self._process_item(item)
                 if result is not None:
-                    if retry > 0:
-                        # Log when we had to skip samples (optional, can be removed if too verbose)
-                        pass
                     return result
 
             # All retries failed
@@ -166,7 +163,7 @@ class DataCompDataset(TorchDataset):
         if image is None:
             self.num_failed_downloads += 1
             if self.skip_on_error:
-                return None  # Collator will filter this out
+                return None  # Skip this sample
             else:
                 # Return a blank image as fallback
                 image = Image.new("RGB", (224, 224), color=(128, 128, 128))
@@ -219,9 +216,12 @@ def load_datacomp(
         )
 
         # Take subset if specified
+        # Take more samples than requested to account for failed downloads
+        # Typically ~30-50% of DataComp images fail to download
         if num_samples:
-            hf_dataset = hf_dataset.take(num_samples)
-            print(f"  Taking first {num_samples} samples (streaming)")
+            buffer_multiplier = 20  # Take 20x more to ensure we get enough valid samples
+            hf_dataset = hf_dataset.take(num_samples * buffer_multiplier)
+            print(f"  Taking first {num_samples * buffer_multiplier} samples (streaming, will filter to {num_samples} valid)")
     else:
         # Non-streaming mode: loads full dataset into memory
         if num_samples:

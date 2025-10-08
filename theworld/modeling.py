@@ -366,36 +366,55 @@ class TheWorld(nn.Module):
 
         return model
 
-    def forward(self, input_pixels, text, labels=None, num_world_steps=None):
-        # input_pixels: PIL Image, numpy array (H,W,C), or torch.Tensor (B,C,H,W)
-        # text: The text prompt/question (string or list of strings)
-        # num_world_steps: Override for number of future steps to predict (default: use self.num_world_steps)
+    def forward(self, input_ids=None, pixel_values=None, attention_mask=None,
+                images=None, texts=None, labels=None, num_world_steps=None,
+                input_pixels=None, text=None, **kwargs):
+        """Forward pass for TheWorld model.
 
+        Accepts two input formats:
+        1. Preprocessed (from collator): input_ids, pixel_values, attention_mask, images, texts, labels
+        2. Raw (for direct inference): input_pixels, text, labels
+
+        Args:
+            input_ids: Preprocessed token IDs from collator
+            pixel_values: Preprocessed image tensors from collator (for Gemma)
+            attention_mask: Attention mask from collator
+            images: Raw PIL images (for Cosmos)
+            texts: Raw text prompts (for Cosmos)
+            labels: Target labels
+            num_world_steps: Override for number of future steps
+            input_pixels: Raw image input (backward compatibility)
+            text: Raw text input (backward compatibility)
+        """
         # Use instance default if not provided
         if num_world_steps is None:
             num_world_steps = self.num_world_steps
 
-        text_prompt = text if isinstance(text, str) else text[0]
+        # Handle backward compatibility: direct inference calls
+        if input_pixels is not None and text is not None:
+            # Direct call with raw inputs - need to preprocess
+            images = [input_pixels] if not isinstance(input_pixels, list) else input_pixels
+            texts = [text] if not isinstance(text, list) else text
+            # Will do full preprocessing below
+            preprocessed = False
+        else:
+            # Called from Trainer with preprocessed inputs
+            preprocessed = True
 
-        # Handle different input types - convert to both PIL and tensor
-        if isinstance(input_pixels, Image.Image):
-            # PIL Image input (from HuggingFace datasets)
-            pil_image = input_pixels
-            # Convert to tensor for Cosmos VAE
+        # Extract single items from batch (we only support batch_size=1 currently)
+        pil_image = images[0] if isinstance(images, list) else images
+        text_prompt = texts[0] if isinstance(texts, list) else texts
+
+        # Convert PIL image to tensor for Cosmos
+        if isinstance(pil_image, Image.Image):
             img_np = np.array(pil_image.convert("RGB"))
             tensor_image = torch.from_numpy(img_np).permute(2, 0, 1).unsqueeze(0)  # (1, C, H, W)
-        elif isinstance(input_pixels, np.ndarray):
-            # NumPy array (H, W, C)
-            pil_image = Image.fromarray(input_pixels.astype(np.uint8))
-            tensor_image = torch.from_numpy(input_pixels).permute(2, 0, 1).unsqueeze(0)  # (1, C, H, W)
+        elif isinstance(pil_image, np.ndarray):
+            tensor_image = torch.from_numpy(pil_image).permute(2, 0, 1).unsqueeze(0)
+            pil_image = Image.fromarray(pil_image.astype(np.uint8))
         else:
-            # Torch tensor (B, C, H, W) - current format
-            tensor_image = input_pixels
-            # Convert to PIL for Gemma processor
-            img_tensor = input_pixels[0].float()
-            img_np = img_tensor.permute(1, 2, 0).cpu().numpy()
-            img_np = ((img_np - img_np.min()) / (img_np.max() - img_np.min()) * 255).astype(np.uint8)
-            pil_image = Image.fromarray(img_np)
+            # Already a tensor
+            tensor_image = pil_image
 
         # Ensure tensor is on correct device and dtype
         tensor_image = tensor_image.to(self.device, dtype=torch.bfloat16)
@@ -445,31 +464,43 @@ class TheWorld(nn.Module):
         # Now we have: projected_world_embeds shape: [B, num_world_tokens, 2560]
 
         # ========================================
-        # STEP 2: Create chat template with bracket tokens
+        # STEP 2: Get preprocessed Gemma inputs
         # ========================================
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "<the_world_start> <the_world_end>"},  # Bracket markers
-                    {"type": "image", "image": pil_image},  # Image will be processed by SigLIP
-                    {"type": "text", "text": text_prompt},  # User prompt
-                ],
-            }
-        ]
+        if not preprocessed:
+            # Direct inference call - need to preprocess
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "<the_world_start> <the_world_end>"},  # Bracket markers
+                        {"type": "image", "image": pil_image},  # Image will be processed by SigLIP
+                        {"type": "text", "text": text_prompt},  # User prompt
+                    ],
+                }
+            ]
 
-        # Apply chat template - this handles image token insertion automatically
-        gemma_inputs = self.processor.apply_chat_template(
-            messages,
-            add_generation_prompt=False,  # No generation prompt for embeddings
-            tokenize=True,
-            return_tensors="pt",
-            return_dict=True,  # Returns input_ids, attention_mask, pixel_values, etc.
-        )
+            # Apply chat template - this handles image token insertion automatically
+            gemma_inputs = self.processor.apply_chat_template(
+                messages,
+                add_generation_prompt=False,  # No generation prompt for embeddings
+                tokenize=True,
+                return_tensors="pt",
+                return_dict=True,  # Returns input_ids, attention_mask, pixel_values, etc.
+            )
 
-        # Move inputs to the device where Gemma is
-        target_device = self.gemma.get_input_embeddings().weight.device
-        gemma_inputs = {k: v.to(target_device) for k, v in gemma_inputs.items()}
+            # Move inputs to the device where Gemma is
+            target_device = self.gemma.get_input_embeddings().weight.device
+            gemma_inputs = {k: v.to(target_device) for k, v in gemma_inputs.items()}
+
+            input_ids = gemma_inputs["input_ids"]
+            pixel_values = gemma_inputs["pixel_values"]
+        else:
+            # Training call - use preprocessed inputs from collator
+            target_device = self.gemma.get_input_embeddings().weight.device
+            input_ids = input_ids.to(target_device)
+            pixel_values = pixel_values.to(target_device)
+            if attention_mask is not None:
+                attention_mask = attention_mask.to(target_device)
 
         # ========================================
         # STEP 3: Manually construct input embeddings with vision features
@@ -477,8 +508,6 @@ class TheWorld(nn.Module):
         # This replicates what Gemma3Model.forward() does internally (modeling_gemma3.py:826-956),
         # but we do it manually so we can inject world embeddings before the language model processes them.
         # By doing this, world embeddings flow through ALL transformer layers alongside vision and text.
-        input_ids = gemma_inputs["input_ids"]
-        pixel_values = gemma_inputs["pixel_values"]
 
         # 3a. Get text token embeddings (image tokens are placeholders at this point)
         # Reference: Gemma3Model.forward() line 887-888
@@ -529,9 +558,14 @@ class TheWorld(nn.Module):
             # ========================================
             # STEP 5: Update attention mask
             # ========================================
-            attention_mask = gemma_inputs["attention_mask"]
-            attention_mask_before = attention_mask[:, : start_pos + 1]
-            attention_mask_after = attention_mask[:, end_pos:]
+            # Get attention mask from preprocessing
+            if not preprocessed:
+                attn_mask = gemma_inputs["attention_mask"]
+            else:
+                attn_mask = attention_mask
+
+            attention_mask_before = attn_mask[:, : start_pos + 1]
+            attention_mask_after = attn_mask[:, end_pos:]
             world_attention_mask = torch.ones(
                 (b, projected_world_embeds.size(1)), dtype=torch.long, device=target_device
             )
@@ -545,15 +579,18 @@ class TheWorld(nn.Module):
         # STEP 6: Prepare labels for training (if provided)
         # ========================================
         if labels is not None and len(start_positions) > 0:
-            # Structure: [tokens_before | <start> | world | <end> | tokens_after]
-            # Only compute loss on text tokens, not special tokens or world/image
-            num_before_start = start_pos + 1
+            # For training: Use standard causal LM approach - predict next token
+            # Labels are just the shifted input_ids with world tokens masked out
+
             num_world = projected_world_embeds.size(1)
 
-            # Create labels: -100 for all non-text tokens
-            labels_before = input_ids[:, :num_before_start].to(target_device)
-            labels_world = torch.full((b, num_world), -100, dtype=torch.long, device=target_device)
-            labels_after = input_ids[:, end_pos:].to(target_device)
+            # Build labels matching combined_embeds structure:
+            # [tokens_before | world_tokens | tokens_after]
+            # Mask out world tokens with -100
+
+            labels_before = input_ids[:, :start_pos + 1].to(target_device)  # Up to <start>
+            labels_world = torch.full((b, num_world), -100, dtype=torch.long, device=target_device)  # Mask world
+            labels_after = input_ids[:, end_pos:].to(target_device)  # After <end>
 
             combined_labels = torch.cat([labels_before, labels_world, labels_after], dim=1)
         else:
