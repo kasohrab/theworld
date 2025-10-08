@@ -28,6 +28,15 @@ train-simple:
 train-hf:
 	uv run python scripts/train_hf.py
 
+# Run smoke test (2 samples, ~3 min, tests entire pipeline)
+smoke-test:
+	@if [ -z "$$HF_TOKEN" ]; then \
+		echo "Error: HF_TOKEN environment variable not set"; \
+		echo "Please run: export HF_TOKEN=hf_your_token_here"; \
+		exit 1; \
+	fi
+	uv run python scripts/train_hf.py --config configs/smoke_test.json
+
 # Backward compatibility alias
 train: train-simple
 
