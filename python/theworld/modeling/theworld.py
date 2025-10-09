@@ -66,31 +66,52 @@ class TheWorld(nn.Module):
         self.freeze_gemma_language = freeze_gemma_language
         self.freeze_cosmos_vae = freeze_cosmos_vae
 
-        # --- 1. Load the full Cosmos Pipeline to access all components ---
-        self.cosmos_pipe: Cosmos2VideoToWorldPipeline = Cosmos2VideoToWorldPipeline.from_pretrained(
-            cosmos_model_name,
-            torch_dtype=torch.bfloat16,
-            safety_checker=None,
-            requires_safety_checker=False,
-            low_cpu_mem_usage=True,
-            local_files_only=True,
-        )
-        self.cosmos_pipe = self.cosmos_pipe.to(device)
+        # Load the real CosmosSafetyChecker (required by pipeline)
+        print("Loading CosmosSafetyChecker...")
+        from cosmos_guardrail import CosmosSafetyChecker
 
-        self.cosmos_vae_encoder = self.cosmos_pipe.components["vae"].encoder
+        safety_checker = CosmosSafetyChecker()
+        print("✓ CosmosSafetyChecker loaded")
 
-        # Load Gemma 3 vision-language model and processor
-        # Use device_map="auto" for automatic tensor parallelism across GPUs
+        # --- 1. Load Gemma first (uses device_map="auto" for efficient GPU loading) ---
+        print("Loading Gemma 3 vision-language model...")
+        import gc
+
         self.gemma = Gemma3ForConditionalGeneration.from_pretrained(
             gemma_model_name,
             torch_dtype=torch.bfloat16,
             device_map="auto",
             low_cpu_mem_usage=True,
-            local_files_only=True,
+            local_files_only=False,
         )
+        print(f"✓ Gemma loaded to {self.gemma.device if hasattr(self.gemma, 'device') else 'auto'}")
+
+        # Aggressive memory cleanup before loading Cosmos
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        # --- 2. Load Cosmos Pipeline ---
+        print("Loading Cosmos pipeline...")
+        self.cosmos_pipe: Cosmos2VideoToWorldPipeline = Cosmos2VideoToWorldPipeline.from_pretrained(
+            cosmos_model_name,
+            torch_dtype=torch.bfloat16,
+            safety_checker=safety_checker,
+            low_cpu_mem_usage=True,
+            local_files_only=False,
+        )
+        self.cosmos_pipe = self.cosmos_pipe.to(device)
+        print(f"✓ Cosmos pipeline loaded to {device}")
+
+        self.cosmos_vae_encoder = self.cosmos_pipe.components["vae"].encoder
+
+        # Final cleanup
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         self.processor = AutoProcessor.from_pretrained(
             gemma_model_name,
-            local_files_only=True,
+            local_files_only=False,
         )
 
         # Get the output dimensions from the Cosmos encoder and Gemma
