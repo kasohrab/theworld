@@ -25,10 +25,10 @@ Example usage:
 import argparse
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Any, cast
 
 from PIL import Image
-from datasets import load_dataset
+from datasets import load_dataset, Dataset
 
 # Add project root to path
 project_root = Path(__file__).parent.parent
@@ -69,7 +69,8 @@ class BLINKDemo:
 
         # Load dataset
         print(f"Loading BLINK/{task} ({split} split)...")
-        self.dataset = load_dataset("BLINK-Benchmark/BLINK", task, split=split, trust_remote_code=True)
+        dataset_raw = load_dataset("BLINK-Benchmark/BLINK", task, split=split, trust_remote_code=True)
+        self.dataset = cast(Dataset, dataset_raw)
         print(f"Loaded {len(self.dataset)} examples\n")
 
         self.current_idx = 0
@@ -123,7 +124,7 @@ class BLINKDemo:
             return
 
         self.current_idx = idx
-        example = self.dataset[idx]
+        example = cast(dict[str, Any], self.dataset[idx])
 
         # Print header
         print("\n" + "=" * 80)
@@ -131,7 +132,7 @@ class BLINKDemo:
         print("=" * 80)
 
         # Show image info
-        image = example["image_1"]
+        image = cast(Image.Image, example["image_1"])
         print(f"\n📷 Image: {image.size} pixels ({image.mode})")
 
         # Show question

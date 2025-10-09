@@ -5,10 +5,24 @@ Includes dataset classes and collate functions for HuggingFace Trainer.
 
 import torch
 from torch.utils.data import Dataset
-from typing import List, Dict, Any, Optional, Union
+from typing import List, Dict, Any, TYPE_CHECKING, Optional, TypedDict
 from PIL import Image
 import numpy as np
 from pathlib import Path
+
+if TYPE_CHECKING:
+    from transformers import AutoProcessor, AutoTokenizer
+
+
+class TheWorldBatch(TypedDict):
+    """Type definition for TheWorld collator output."""
+
+    input_ids: torch.Tensor
+    attention_mask: torch.Tensor
+    pixel_values: torch.Tensor
+    images: List[Image.Image]
+    texts: List[str]
+    labels: Optional[torch.Tensor]  # Optional field
 
 
 class TheWorldDataset(Dataset):
@@ -119,104 +133,100 @@ class HFDatasetWrapper(Dataset):
 
 def theworld_collate_fn(
     batch: List[Dict[str, Any]],
-    processor,
-    tokenizer,
+    processor: "AutoProcessor",
+    tokenizer: "AutoTokenizer",
     max_length: int = 2048,
-    world_start_id: int = None,
-    world_end_id: int = None,
+    world_start_id: Optional[int] = None,  # Unused but kept for compatibility
+    world_end_id: Optional[int] = None,  # Unused but kept for compatibility
     num_world_tokens: int = 784,  # Default: 28x28 for single frame
-) -> Dict[str, torch.Tensor]:
+) -> TheWorldBatch:
     """Collate function for batching TheWorld inputs.
 
     This function:
-    1. Processes images through Gemma processor (handles chat template)
-    2. Tokenizes labels
-    3. Creates combined labels with -100 for vision/world tokens
+    1. Formats chat template as text only (NO vision encoding - that happens in model)
+    2. Tokenizes text with image placeholders
+    3. Preprocesses images for SigLIP (resize/normalize only, no encoding)
+    4. Keeps raw PIL images for Cosmos
 
     Args:
         batch: List of dictionaries with 'image', 'text', 'label'
-        processor: Gemma processor (handles images + text)
-        tokenizer: Gemma tokenizer (for labels)
+        processor: Gemma processor (for image preprocessing and tokenization)
+        tokenizer: Gemma tokenizer (for text)
         max_length: Maximum sequence length
-        world_start_id: Token ID for <the_world_start>
-        world_end_id: Token ID for <the_world_end>
-        num_world_tokens: Number of world tokens (depends on num_world_steps)
+        world_start_id: Token ID for <the_world_start> (unused, for compatibility)
+        world_end_id: Token ID for <the_world_end> (unused, for compatibility)
+        num_world_tokens: Number of world tokens (unused, for compatibility)
 
     Returns:
         Dictionary with:
             - input_ids: Token IDs for input
             - attention_mask: Attention mask
-            - pixel_values: Image tensors
+            - pixel_values: Preprocessed image tensors (for SigLIP, not encoded)
+            - images: Raw PIL images (for Cosmos)
+            - texts: Raw text prompts (for Cosmos)
             - labels: Labels for loss computation
     """
     images = [item["image"] for item in batch]
     texts = [item["text"] for item in batch]
-    labels = [item.get("label", None) for item in batch]
+    labels_raw = [item.get("label", None) for item in batch]
 
-    # Create messages format for Gemma processor
-    # Gemma processor expects: [{"role": "user", "content": [{"type": "text"}, {"type": "image"}]}]
-    messages_batch = []
-    for image, text in zip(images, texts):
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "<the_world_start> <the_world_end>"},  # Placeholder for world tokens
-                    {"type": "image", "image": image},
-                    {"type": "text", "text": text},
-                ],
-            }
-        ]
-        messages_batch.append(messages)
+    # Format chat messages as text (will be tokenized, not run through vision encoder)
+    text_inputs = []
+    for text in texts:
+        # Create chat-formatted text with world brackets and image placeholder
+        # The processor will insert <start_of_image><image><end_of_image> tokens
+        chat_text = f"<start_of_turn>user\n<the_world_start> <the_world_end><image>{text}<end_of_turn>\n"
+        text_inputs.append(chat_text)
 
-    # Process through Gemma processor
-    # This handles chat template, image preprocessing, etc.
-    processed = []
-    for messages in messages_batch:
-        proc_item = processor.apply_chat_template(
-            messages,
-            add_generation_prompt=False,
-            tokenize=True,
+    # Tokenize text (with image placeholder tokens, but NO vision encoding)
+    text_encodings = tokenizer(  # pyright: ignore[reportCallIssue] - AutoTokenizer is callable at runtime
+        text_inputs,
+        padding=True,
+        truncation=True,
+        max_length=max_length,
+        return_tensors="pt",
+    )
+
+    input_ids = text_encodings["input_ids"]
+    attention_mask = text_encodings["attention_mask"]
+
+    # Preprocess images for SigLIP (resize, normalize - NO encoding)
+    # This is just tensor preprocessing, not running through the vision encoder
+    pixel_values_list = []
+    for image in images:
+        # Use image_processor to preprocess (resize, normalize) but NOT encode
+        # This returns tensors ready for SigLIP input
+        processed_image = processor.image_processor(  # pyright: ignore[reportAttributeAccessIssue]
+            images=image,
             return_tensors="pt",
-            return_dict=True,
-            max_length=max_length,
-            truncation=True,
         )
-        processed.append(proc_item)
+        pixel_values_list.append(processed_image["pixel_values"])
 
-    # Stack batch
-    input_ids = torch.cat([p["input_ids"] for p in processed], dim=0)
-    attention_mask = torch.cat([p["attention_mask"] for p in processed], dim=0)
-    pixel_values = torch.cat([p["pixel_values"] for p in processed], dim=0)
+    pixel_values = torch.cat(pixel_values_list, dim=0)
 
     # Process labels if provided
-    if any(label is not None for label in labels):
+    labels = None
+    if any(label is not None for label in labels_raw):
         # Tokenize labels
-        label_encodings = tokenizer(
-            [label if label is not None else "" for label in labels],
+        label_encodings = tokenizer(  # pyright: ignore[reportCallIssue] - AutoTokenizer is callable at runtime
+            [label if label is not None else "" for label in labels_raw],
             padding=True,
             truncation=True,
             max_length=max_length,
             return_tensors="pt",
         )
-        label_ids = label_encodings["input_ids"]
+        labels = label_encodings["input_ids"]
 
         # Replace padding token id with -100 (ignore index)
-        label_ids[label_ids == tokenizer.pad_token_id] = -100
-
-        # Note: The actual label alignment with world tokens happens in model.forward()
-        # We just provide the text labels here
-        combined_labels = label_ids
-    else:
-        combined_labels = None
+        labels[labels == tokenizer.pad_token_id] = -100  # pyright: ignore[reportAttributeAccessIssue]
 
     return {
         "input_ids": input_ids,
         "attention_mask": attention_mask,
         "pixel_values": pixel_values,
-        "labels": combined_labels,
+        "labels": labels,
         "images": images,  # Raw PIL images for Cosmos processing
-        "texts": texts,    # Raw text prompts for Cosmos processing
+        "texts": texts,  # Raw text prompts for Cosmos processing
     }
 
 

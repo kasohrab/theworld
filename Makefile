@@ -6,11 +6,11 @@ setup:
 
 # Format code with black
 format:
-	uv run black theworld/*.py examples/*.py scripts/*.py
+	uv run black python/theworld/*.py examples/*.py scripts/*.py
 
 # Check formatting without modifying files
 check:
-	uv run black --check theworld/*.py examples/*.py scripts/*.py
+	uv run black --check python/theworld/*.py examples/*.py scripts/*.py
 
 # Install dependencies including dev tools (use 'make setup' instead for full setup)
 install:
