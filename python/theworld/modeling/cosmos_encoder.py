@@ -41,11 +41,13 @@ class CosmosEncoder(nn.Module):
         gemma_dim: int = 2304,
         max_world_steps: int = 16,
         device: str = "cuda",
+        freeze_vae: bool = True,
     ):
         super().__init__()
         self.cosmos_pipe = cosmos_pipe
         self.device = device
         self.cosmos_dim = cosmos_dim
+        self.freeze_vae = freeze_vae
 
         # Temporal embeddings: Helps distinguish between t=0 (current), t=1, t=2, ... (future)
         self.temporal_embedding = nn.Embedding(max_world_steps + 1, cosmos_dim, dtype=torch.bfloat16).to(device)
@@ -95,25 +97,23 @@ class CosmosEncoder(nn.Module):
         # Add time dimension for VAE: (B, C, T, H, W) where T=1 for single frame
         cosmos_input_5d = tensor_batch.unsqueeze(2)
 
-        # Encode through Cosmos
-        if num_world_steps == 0:
-            # Single-step: Just encode current frame
-            with torch.no_grad():
-                latent_dist = self.cosmos_pipe.vae.encode(cosmos_input_5d).latent_dist
-                latent_img_embeds = latent_dist.mean  # (B, 16, 1, H, W) - deterministic
-        else:
-            # Multi-step: Autoregressive rollout to predict future frames
-            with torch.no_grad():
-                # Ensure pipeline is on correct device
-                self.cosmos_pipe = self.cosmos_pipe.to(self.device)
+        # Encode through Cosmos pipeline
+        # Use pipeline for all cases (single-step and multi-step) for consistency
+        # Only use no_grad if VAE is frozen, otherwise allow gradients to flow
 
-                # Process each image individually (pipeline expects single image)
-                all_latents = []
+        # Ensure pipeline is on correct device
+        self.cosmos_pipe = self.cosmos_pipe.to(self.device)
+
+        # Process each image individually (pipeline expects single image)
+        all_latents = []
+
+        if self.freeze_vae:
+            with torch.no_grad():
                 for pil_img, text_prompt in zip(images, texts):
                     output: Union[CosmosPipelineOutput, Any] = self.cosmos_pipe(
                         prompt=text_prompt,
                         image=pil_img,  # PIL Image required for pipeline
-                        num_frames=1 + num_world_steps,  # Current + future
+                        num_frames=1 + num_world_steps,  # Current + future (1 for single-step)
                         num_inference_steps=10,
                         output_type="latent",  # Don't decode to pixels
                         return_dict=True,
@@ -123,9 +123,25 @@ class CosmosEncoder(nn.Module):
                         output, CosmosPipelineOutput
                     ), "Expected CosmosPipelineOutput with return_dict=True"
                     all_latents.append(output.frames)
+        else:
+            # VAE unfrozen - allow gradients to flow
+            for pil_img, text_prompt in zip(images, texts):
+                output: Union[CosmosPipelineOutput, Any] = self.cosmos_pipe(
+                    prompt=text_prompt,
+                    image=pil_img,  # PIL Image required for pipeline
+                    num_frames=1 + num_world_steps,  # Current + future (1 for single-step)
+                    num_inference_steps=10,
+                    output_type="latent",  # Don't decode to pixels
+                    return_dict=True,
+                )
+                # Access frames attribute (guaranteed to exist when return_dict=True)
+                assert isinstance(
+                    output, CosmosPipelineOutput
+                ), "Expected CosmosPipelineOutput with return_dict=True"
+                all_latents.append(output.frames)
 
-                # Stack latents: (B, 16, T, H, W)
-                latent_img_embeds = torch.cat(all_latents, dim=0)
+        # Stack latents: (B, 16, T, H, W) where T=1+num_world_steps
+        latent_img_embeds = torch.cat(all_latents, dim=0)
 
         # Shape validation
         b, c, t, h, w = latent_img_embeds.shape

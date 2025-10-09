@@ -140,6 +140,7 @@ class TheWorld(nn.Module):
             gemma_dim=gemma_dim,
             max_world_steps=max_world_steps,
             device=device,
+            freeze_vae=freeze_cosmos_vae,
         )
 
         # Optionally reinitialize projection with random weights (for ablation studies)

@@ -170,25 +170,45 @@ def theworld_collate_fn(
     texts = [item["text"] for item in batch]
     labels_raw = [item.get("label", None) for item in batch]
 
-    # Format chat messages as text (will be tokenized, not run through vision encoder)
-    text_inputs = []
-    for text in texts:
-        # Create chat-formatted text with world brackets and image placeholder
-        # The processor will insert <start_of_image><image><end_of_image> tokens
-        chat_text = f"<start_of_turn>user\n<the_world_start> <the_world_end><image>{text}<end_of_turn>\n"
-        text_inputs.append(chat_text)
+    # Use processor's chat template to properly format messages with image placeholders
+    # This ensures <start_of_image> and <end_of_image> tokens are correctly inserted
+    messages_batch = []
+    for image, text in zip(images, texts):
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "<the_world_start> <the_world_end>"},  # World token brackets
+                    {"type": "image", "image": image},  # Image placeholder
+                    {"type": "text", "text": text},  # Question/prompt
+                ],
+            }
+        ]
+        messages_batch.append(messages)
 
-    # Tokenize text (with image placeholder tokens, but NO vision encoding)
-    text_encodings = tokenizer(  # pyright: ignore[reportCallIssue] - AutoTokenizer is callable at runtime
-        text_inputs,
-        padding=True,
-        truncation=True,
-        max_length=max_length,
-        return_tensors="pt",
-    )
+    # Apply chat template to get properly formatted input_ids with image tokens
+    # We process each item individually because apply_chat_template doesn't support batching
+    input_ids_list = []
+    attention_mask_list = []
+    for messages in messages_batch:
+        formatted = processor.apply_chat_template(
+            messages,
+            tokenize=True,
+            add_generation_prompt=False,  # We don't want assistant prefix yet
+            return_dict=True,
+            return_tensors="pt",
+        )
+        input_ids_list.append(formatted["input_ids"])
+        attention_mask_list.append(formatted["attention_mask"])
 
-    input_ids = text_encodings["input_ids"]
-    attention_mask = text_encodings["attention_mask"]
+    # Pad to same length
+    max_len = max(ids.size(1) for ids in input_ids_list)
+    input_ids = torch.zeros(len(input_ids_list), max_len, dtype=torch.long)
+    attention_mask = torch.zeros(len(attention_mask_list), max_len, dtype=torch.long)
+
+    for i, (ids, mask) in enumerate(zip(input_ids_list, attention_mask_list)):
+        input_ids[i, : ids.size(1)] = ids
+        attention_mask[i, : mask.size(1)] = mask
 
     # Preprocess images for SigLIP (resize, normalize - NO encoding)
     # This is just tensor preprocessing, not running through the vision encoder
