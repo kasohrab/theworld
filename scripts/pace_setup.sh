@@ -117,9 +117,21 @@ echo ""
 
 # Step 6: Install Cosmos guardrail
 echo -e "${BLUE}[6/7]${NC} Installing Cosmos safety checker..."
-echo "  Running: uv pip install cosmos_guardrail"
-uv pip install cosmos_guardrail > /dev/null 2>&1
-echo -e "${GREEN}✓ Cosmos guardrail installed${NC}"
+echo "  Note: cosmos_guardrail has dependency conflicts with newer transformers"
+echo "  Installing without dependencies and copying from conda env..."
+
+# Install cosmos_guardrail in conda env (where it can coexist)
+pip install cosmos_guardrail > /dev/null 2>&1
+
+# Copy the installed package to .venv (since uv can't install it due to conflicts)
+if [ -d "${ENV_PATH}/lib/python3.11/site-packages/cosmos_guardrail" ]; then
+    cp -r "${ENV_PATH}/lib/python3.11/site-packages/cosmos_guardrail" .venv/lib/python3.11/site-packages/
+    cp -r "${ENV_PATH}/lib/python3.11/site-packages/cosmos_guardrail-"*.dist-info .venv/lib/python3.11/site-packages/ 2>/dev/null || true
+    echo -e "${GREEN}✓ Cosmos guardrail installed${NC}"
+else
+    echo -e "${YELLOW}⚠ Could not find cosmos_guardrail package${NC}"
+    echo "  You may need to install it manually"
+fi
 echo ""
 
 # Step 7: Install nodejs (if not using env file)

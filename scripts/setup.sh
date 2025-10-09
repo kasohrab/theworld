@@ -100,9 +100,23 @@ echo ""
 
 # Step 3: Install Cosmos guardrail
 echo -e "${BLUE}[3/7]${NC} Installing Cosmos safety checker..."
-echo "  Running: uv pip install cosmos_guardrail"
-uv pip install cosmos_guardrail > /dev/null 2>&1
-echo -e "${GREEN}✓ Cosmos guardrail installed${NC}"
+echo "  Note: cosmos_guardrail dependencies are already in pyproject.toml"
+echo "  The package itself requires special handling due to version conflicts"
+
+# Try to install via pip (will go to a temp location)
+python3 -m pip install --target ./.temp_cosmos cosmos_guardrail --no-deps > /dev/null 2>&1 || true
+
+# Copy to .venv if successful
+if [ -d "./.temp_cosmos/cosmos_guardrail" ]; then
+    mkdir -p .venv/lib/python3.11/site-packages
+    cp -r ./.temp_cosmos/cosmos_guardrail .venv/lib/python3.11/site-packages/
+    cp -r ./.temp_cosmos/cosmos_guardrail-*.dist-info .venv/lib/python3.11/site-packages/ 2>/dev/null || true
+    rm -rf ./.temp_cosmos
+    echo -e "${GREEN}✓ Cosmos guardrail installed${NC}"
+else
+    echo -e "${YELLOW}⚠ Could not install cosmos_guardrail automatically${NC}"
+    echo "  Dependencies are installed, but cosmos_guardrail package may need manual setup"
+fi
 echo ""
 
 # Step 4: Create necessary directories
