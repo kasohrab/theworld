@@ -31,8 +31,8 @@ from pathlib import Path
 
 import torch
 from transformers import Trainer, TrainingArguments
-from transformers.trainer_callback import EarlyStoppingCallback
 from huggingface_hub import snapshot_download
+from typing import Optional
 
 # Add project root to path
 project_root = Path(__file__).parent.parent
@@ -182,7 +182,7 @@ def load_datasets(config: TrainingConfig):
     return train_dataset, eval_dataset
 
 
-def resolve_checkpoint_path(checkpoint_path: str, hf_token: str = None) -> str:
+def resolve_checkpoint_path(checkpoint_path: str, hf_token: Optional[str] = None) -> Optional[str]:
     """Resolve checkpoint path, downloading from Hub if needed.
 
     Args:
@@ -336,7 +336,7 @@ def main():
         # Training
         num_train_epochs=config.num_epochs,
         per_device_train_batch_size=config.batch_size,
-        per_device_eval_batch_size=config.eval_batch_size,
+        per_device_eval_batch_size=config.eval_batch_size if config.eval_batch_size is not None else config.batch_size,
         gradient_accumulation_steps=config.gradient_accumulation_steps,
         learning_rate=config.learning_rate,
         weight_decay=config.weight_decay,
@@ -380,7 +380,11 @@ def main():
             name=config.wandb_run_name,
             config=config.to_dict(),
         )
-        training_args.report_to.append("wandb")
+        # Ensure report_to is a list before appending
+        if isinstance(training_args.report_to, list):
+            training_args.report_to.append("wandb")
+        else:
+            training_args.report_to = ["wandb"]
 
     # Create Trainer
     trainer = Trainer(

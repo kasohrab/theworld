@@ -197,9 +197,9 @@ class Gemma3Baseline:
         # Decode output
         # Get only the generated tokens (skip input)
         if isinstance(inputs, dict) and "input_ids" in inputs:
-            input_len = inputs["input_ids"].shape[1]
+            input_len = inputs["input_ids"].shape[1]  # type: ignore[union-attr]
         else:
-            input_len = inputs.shape[1]
+            input_len = inputs.shape[1]  # type: ignore[union-attr]
 
         generated_ids = outputs[:, input_len:]
         response = self.processor.decode(generated_ids[0], skip_special_tokens=True)

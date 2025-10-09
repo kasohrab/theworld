@@ -157,7 +157,9 @@ class DataCompDataset(TorchDataset):
         url = item.get("url") or item.get("default/url")
         caption = item.get("text") or item.get("default/text", "")
 
-        # Download image
+        # Download image (skip if no URL)
+        if url is None:
+            return None
         image = download_image(url)
 
         if image is None:
@@ -220,8 +222,10 @@ def load_datacomp(
         # Typically ~30-50% of DataComp images fail to download
         if num_samples:
             buffer_multiplier = 20  # Take 20x more to ensure we get enough valid samples
-            hf_dataset = hf_dataset.take(num_samples * buffer_multiplier)
-            print(f"  Taking first {num_samples * buffer_multiplier} samples (streaming, will filter to {num_samples} valid)")
+            hf_dataset = hf_dataset.take(num_samples * buffer_multiplier)  # type: ignore[union-attr]
+            print(
+                f"  Taking first {num_samples * buffer_multiplier} samples (streaming, will filter to {num_samples} valid)"
+            )
     else:
         # Non-streaming mode: loads full dataset into memory
         if num_samples:
@@ -231,7 +235,7 @@ def load_datacomp(
                 split=f"{split}[:{num_samples}]",
                 token=hf_token,
             )
-            print(f"  Loaded {len(hf_dataset)} samples")
+            print(f"  Loaded {len(hf_dataset)} samples")  # type: ignore[arg-type]
         else:
             # Load full dataset (1.4B samples - requires a lot of memory!)
             print("  ⚠️  Loading full 1.4B dataset without streaming - this may take a long time!")
@@ -240,7 +244,7 @@ def load_datacomp(
                 split=split,
                 token=hf_token,
             )
-            print(f"  Loaded {len(hf_dataset)} samples")
+            print(f"  Loaded {len(hf_dataset)} samples")  # type: ignore[arg-type]
 
     # Wrap in DataCompDataset
     dataset = DataCompDataset(

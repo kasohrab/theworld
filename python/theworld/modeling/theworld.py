@@ -1,11 +1,19 @@
+"""Main TheWorld model class."""
+
 import torch
 import torch.nn as nn
-from diffusers import Cosmos2VideoToWorldPipeline
-from transformers import Gemma3ForConditionalGeneration, AutoProcessor
-from PIL import Image
 import numpy as np
+from PIL import Image
+from typing import List, Optional, Union, Dict
+from torch import Tensor
+from transformers import Gemma3ForConditionalGeneration, AutoProcessor, GenerationConfig
+from transformers.modeling_outputs import CausalLMOutputWithPast
+from diffusers.pipelines.cosmos.pipeline_cosmos2_video2world import Cosmos2VideoToWorldPipeline
 from huggingface_hub import hf_hub_download
-import os
+
+from .cosmos_encoder import CosmosEncoder
+from .gemma_vision import GemmaVisionEncoder
+from .fusion import EmbeddingFusion
 
 
 class TheWorld(nn.Module):
@@ -59,7 +67,6 @@ class TheWorld(nn.Module):
         self.freeze_cosmos_vae = freeze_cosmos_vae
 
         # --- 1. Load the full Cosmos Pipeline to access all components ---
-        # https://arxiv.org/pdf/2503.15558 Their own reasoning model doesn't even use world model!
         self.cosmos_pipe: Cosmos2VideoToWorldPipeline = Cosmos2VideoToWorldPipeline.from_pretrained(
             cosmos_model_name,
             torch_dtype=torch.bfloat16,
@@ -93,29 +100,42 @@ class TheWorld(nn.Module):
         # Gemma3 uses 'hidden_size' in text_config
         gemma_dim = self.gemma.config.text_config.hidden_size
 
-        # Temporal embeddings for multi-step world model rollout
-        # Helps distinguish between current frame (t=0) and future predictions (t=1,2,...)
-        self.temporal_embedding = nn.Embedding(max_world_steps + 1, cosmos_img_dim, dtype=torch.bfloat16).to(device)
-
-        # Create projection layer for world model embeddings -> Gemma
-        self.world_projection = nn.Linear(cosmos_img_dim, gemma_dim, dtype=torch.bfloat16).to(device)
-
-        # Optionally reinitialize with random weights (for ablation studies)
-        if random_projection_init:
-            nn.init.xavier_uniform_(self.world_projection.weight)
-            if self.world_projection.bias is not None:
-                nn.init.zeros_(self.world_projection.bias)
-            print("⚠ Projection layer randomly initialized (ablation mode)")
-
-        # Add bracket special tokens for world model embeddings
+        # Add bracket special tokens for world model embeddings (before creating modules)
         special_tokens = {"additional_special_tokens": ["<the_world_start>", "<the_world_end>"]}
         num_added = self.processor.tokenizer.add_special_tokens(special_tokens)
         if num_added > 0:
             self.gemma.resize_token_embeddings(len(self.processor.tokenizer))
 
-        # Store token IDs for use in forward pass
+        # Store token IDs for use in modules
         self.world_start_id = self.processor.tokenizer.convert_tokens_to_ids("<the_world_start>")
         self.world_end_id = self.processor.tokenizer.convert_tokens_to_ids("<the_world_end>")
+
+        # --- Create modular components ---
+
+        # CosmosEncoder: Handles VAE encoding, temporal embeddings, projection
+        self.cosmos_encoder = CosmosEncoder(
+            cosmos_pipe=self.cosmos_pipe,
+            cosmos_dim=cosmos_img_dim,
+            gemma_dim=gemma_dim,
+            max_world_steps=max_world_steps,
+            device=device,
+        )
+
+        # Optionally reinitialize projection with random weights (for ablation studies)
+        if random_projection_init:
+            nn.init.xavier_uniform_(self.cosmos_encoder.world_projection.weight)
+            if self.cosmos_encoder.world_projection.bias is not None:
+                nn.init.zeros_(self.cosmos_encoder.world_projection.bias)
+            print("⚠ Projection layer randomly initialized (ablation mode)")
+
+        # GemmaVisionEncoder: Handles SigLIP encoding + embedding fusion
+        self.gemma_vision = GemmaVisionEncoder(gemma_model=self.gemma)
+
+        # EmbeddingFusion: Handles inserting world tokens between brackets
+        self.fusion = EmbeddingFusion(
+            world_start_id=self.world_start_id,
+            world_end_id=self.world_end_id,
+        )
 
         # Expose device map from Gemma to TheWorld (for HuggingFace Trainer compatibility)
         # This prevents Trainer from trying to move the model when device_map="auto" is used
@@ -127,7 +147,7 @@ class TheWorld(nn.Module):
 
     def _apply_freezing(self):
         """Apply freezing configuration to model components."""
-        # Always freeze all Cosmos components first
+        # Always freeze all Cosmos pipeline components first
         for component_name in self.cosmos_pipe.components:
             component = self.cosmos_pipe.components[component_name]
             if component is not None and hasattr(component, "parameters"):
@@ -159,10 +179,11 @@ class TheWorld(nn.Module):
                 for param in self.gemma.lm_head.parameters():
                     param.requires_grad = False
 
-        # Projection layers are always trainable (not frozen)
-        for param in self.temporal_embedding.parameters():
+        # CosmosEncoder projection layers are always trainable (not frozen)
+        # These are now accessed through the module
+        for param in self.cosmos_encoder.temporal_embedding.parameters():
             param.requires_grad = True
-        for param in self.world_projection.parameters():
+        for param in self.cosmos_encoder.world_projection.parameters():
             param.requires_grad = True
 
     def get_trainable_parameters(self):
@@ -171,7 +192,7 @@ class TheWorld(nn.Module):
         total = sum(p.numel() for p in self.parameters())
         return trainable, total, 100 * trainable / total
 
-    def enable_gradient_checkpointing(self):
+    def enable_gradient_checkpointing(self) -> None:
         """Enable gradient checkpointing for memory-efficient training.
 
         This reduces activation memory by 4-8x at the cost of 30-40% slower training.
@@ -179,23 +200,38 @@ class TheWorld(nn.Module):
         """
         # Enable for Gemma language model (if unfrozen)
         if not self.freeze_gemma_language:
-            if hasattr(self.gemma, "gradient_checkpointing_enable"):
-                self.gemma.gradient_checkpointing_enable()
+            if hasattr(self.gemma, "gradient_checkpointing_enable") and callable(
+                getattr(self.gemma, "gradient_checkpointing_enable")
+            ):
+                getattr(self.gemma, "gradient_checkpointing_enable")()
                 print("✓ Gradient checkpointing enabled for Gemma language model")
-            elif hasattr(self.gemma, "enable_gradient_checkpointing"):
-                self.gemma.enable_gradient_checkpointing()
+            elif hasattr(self.gemma, "enable_gradient_checkpointing") and callable(
+                getattr(self.gemma, "enable_gradient_checkpointing")
+            ):
+                getattr(self.gemma, "enable_gradient_checkpointing")()
                 print("✓ Gradient checkpointing enabled for Gemma language model")
 
         # Enable for Cosmos VAE encoder (if unfrozen)
         if not self.freeze_cosmos_vae:
-            if hasattr(self.cosmos_vae_encoder, "gradient_checkpointing_enable"):
-                self.cosmos_vae_encoder.gradient_checkpointing_enable()
+            if hasattr(self.cosmos_vae_encoder, "gradient_checkpointing_enable") and callable(
+                getattr(self.cosmos_vae_encoder, "gradient_checkpointing_enable")
+            ):
+                getattr(self.cosmos_vae_encoder, "gradient_checkpointing_enable")()
                 print("✓ Gradient checkpointing enabled for Cosmos VAE encoder")
-            elif hasattr(self.cosmos_vae_encoder, "enable_gradient_checkpointing"):
-                self.cosmos_vae_encoder.enable_gradient_checkpointing()
+            elif hasattr(self.cosmos_vae_encoder, "enable_gradient_checkpointing") and callable(
+                getattr(self.cosmos_vae_encoder, "enable_gradient_checkpointing")
+            ):
+                getattr(self.cosmos_vae_encoder, "enable_gradient_checkpointing")()
                 print("✓ Gradient checkpointing enabled for Cosmos VAE encoder")
 
-    def save_checkpoint(self, path: str, optimizer=None, epoch: int = None, step: int = None, **kwargs):
+    def save_checkpoint(
+        self,
+        path: str,
+        optimizer: Optional[torch.optim.Optimizer] = None,
+        epoch: Optional[int] = None,
+        step: Optional[int] = None,
+        **kwargs: Union[str, int, float, bool],
+    ) -> None:
         """Save training checkpoint with trainable parameters and optimizer state.
 
         Args:
@@ -238,7 +274,9 @@ class TheWorld(nn.Module):
         torch.save(checkpoint, path)
         print(f"✓ Checkpoint saved to {path}")
 
-    def load_checkpoint(self, path: str, optimizer=None, strict: bool = False):
+    def load_checkpoint(
+        self, path: str, optimizer: Optional[torch.optim.Optimizer] = None, strict: bool = False
+    ) -> Dict[str, int]:
         """Load training checkpoint and resume training.
 
         Args:
@@ -278,8 +316,8 @@ class TheWorld(nn.Module):
         model_id: str,
         checkpoint_name: str = "pytorch_model.bin",
         device: str = "cuda",
-        hf_token: str = None,
-    ):
+        hf_token: Optional[str] = None,
+    ) -> "TheWorld":
         """Load a trained TheWorld model from HuggingFace Hub.
 
         Args:
@@ -366,274 +404,119 @@ class TheWorld(nn.Module):
 
         return model
 
-    def forward(self, input_ids=None, pixel_values=None, attention_mask=None,
-                images=None, texts=None, labels=None, num_world_steps=None,
-                input_pixels=None, text=None, **kwargs):
-        """Forward pass for TheWorld model.
-
-        Accepts two input formats:
-        1. Preprocessed (from collator): input_ids, pixel_values, attention_mask, images, texts, labels
-        2. Raw (for direct inference): input_pixels, text, labels
+    def forward(
+        self,
+        input_ids: Tensor,
+        pixel_values: Tensor,
+        attention_mask: Tensor,
+        images: List[Image.Image],
+        texts: List[str],
+        labels: Optional[Tensor] = None,
+        num_world_steps: Optional[int] = None,
+    ):
+        """Forward pass for TheWorld model using modular components.
 
         Args:
-            input_ids: Preprocessed token IDs from collator
-            pixel_values: Preprocessed image tensors from collator (for Gemma)
-            attention_mask: Attention mask from collator
-            images: Raw PIL images (for Cosmos)
-            texts: Raw text prompts (for Cosmos)
-            labels: Target labels
-            num_world_steps: Override for number of future steps
-            input_pixels: Raw image input (backward compatibility)
-            text: Raw text input (backward compatibility)
+            input_ids: Token IDs from collator (B, seq_len)
+            pixel_values: Preprocessed images for Gemma SigLIP (B, C, H, W)
+            attention_mask: Attention mask (B, seq_len)
+            images: Raw PIL images for Cosmos (List of B images)
+            texts: Raw text prompts for Cosmos (List of B strings)
+            labels: Target labels for loss computation (B, label_len), optional
+            num_world_steps: Override number of future steps (None = use default)
+
+        Returns:
+            CausalLMOutputWithPast with loss, logits, and other outputs
         """
         # Use instance default if not provided
         if num_world_steps is None:
             num_world_steps = self.num_world_steps
 
-        # Handle backward compatibility: direct inference calls
-        if input_pixels is not None and text is not None:
-            # Direct call with raw inputs - need to preprocess
-            images = [input_pixels] if not isinstance(input_pixels, list) else input_pixels
-            texts = [text] if not isinstance(text, list) else text
-            # Will do full preprocessing below
-            preprocessed = False
-        else:
-            # Called from Trainer with preprocessed inputs
-            preprocessed = True
-
-        # Extract single items from batch (we only support batch_size=1 currently)
-        pil_image = images[0] if isinstance(images, list) else images
-        text_prompt = texts[0] if isinstance(texts, list) else texts
-
-        # Convert PIL image to tensor for Cosmos
-        if isinstance(pil_image, Image.Image):
-            img_np = np.array(pil_image.convert("RGB"))
-            tensor_image = torch.from_numpy(img_np).permute(2, 0, 1).unsqueeze(0)  # (1, C, H, W)
-        elif isinstance(pil_image, np.ndarray):
-            tensor_image = torch.from_numpy(pil_image).permute(2, 0, 1).unsqueeze(0)
-            pil_image = Image.fromarray(pil_image.astype(np.uint8))
-        else:
-            # Already a tensor
-            tensor_image = pil_image
-
-        # Ensure tensor is on correct device and dtype
-        tensor_image = tensor_image.to(self.device, dtype=torch.bfloat16)
+        # ========================================
+        # STEP 1: Encode world via Cosmos
+        # ========================================
+        world_embeds = self.cosmos_encoder(
+            images=images,
+            texts=texts,
+            num_world_steps=num_world_steps,
+        )
+        # world_embeds: (B, num_world_tokens, 2304) where num_world_tokens = 784 * (1 + num_world_steps)
 
         # ========================================
-        # STEP 1: Process Cosmos world model FIRST
+        # STEP 2: Encode vision+text via Gemma
         # ========================================
-        # Get Cosmos world model embeddings with autoregressive rollout
-        # This must happen BEFORE chat template so we know how many world tokens we have
-        cosmos_input_5d = tensor_image.unsqueeze(2) if tensor_image.ndim == 4 else tensor_image
+        # Move inputs to device where Gemma is (may be distributed across GPUs)
+        target_device = self.gemma.get_input_embeddings().weight.device
+        input_ids = input_ids.to(target_device)
+        pixel_values = pixel_values.to(target_device)
+        attention_mask = attention_mask.to(target_device)
 
-        if num_world_steps == 0:
-            # Single-step: just encode current frame
-            with torch.no_grad():
-                latent_dist = self.cosmos_pipe.vae.encode(cosmos_input_5d).latent_dist
-                latent_img_embeds = latent_dist.mean  # (B, 16, 1, H, W)
-        else:
-            # Multi-step: use Cosmos to predict future frames with text conditioning
-            with torch.no_grad():
-                # Ensure pipeline is on correct device (workaround for device migration issues)
-                self.cosmos_pipe = self.cosmos_pipe.to(self.device)
-
-                output = self.cosmos_pipe(
-                    prompt=text_prompt,  # Use actual text prompt
-                    image=pil_image,  # PIL Image for pipeline
-                    num_frames=1 + num_world_steps,
-                    num_inference_steps=10,
-                    output_type="latent",
-                    return_dict=True,
-                )
-                latent_img_embeds = output.frames
-
-        # Process Cosmos latents
-        b, c, t, h, w = latent_img_embeds.shape
-        latent_img_embeds = latent_img_embeds.permute(0, 2, 3, 4, 1)  # (B, T, H, W, 16)
-
-        # Add temporal embeddings
-        temporal_ids = torch.arange(t, device=self.device)
-        temporal_embeds = self.temporal_embedding(temporal_ids)
-        latent_img_embeds = latent_img_embeds + temporal_embeds.view(1, t, 1, 1, c)
-
-        # Reshape and project Cosmos world embeddings
-        reshaped_world_embeds = latent_img_embeds.reshape(b, t * h * w, c)
-        # Ensure correct dtype for projection layer
-        reshaped_world_embeds = reshaped_world_embeds.to(dtype=torch.bfloat16)
-        projected_world_embeds = self.world_projection(reshaped_world_embeds)
-        # Now we have: projected_world_embeds shape: [B, num_world_tokens, 2560]
+        gemma_output = self.gemma_vision(
+            input_ids=input_ids,
+            pixel_values=pixel_values,
+            attention_mask=attention_mask,
+        )
+        # gemma_output.embeddings: (B, seq_len, 2304) - combined vision+text embeddings
 
         # ========================================
-        # STEP 2: Get preprocessed Gemma inputs
+        # STEP 3: Fuse embeddings (insert world tokens)
         # ========================================
-        if not preprocessed:
-            # Direct inference call - need to preprocess
-            messages = [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": "<the_world_start> <the_world_end>"},  # Bracket markers
-                        {"type": "image", "image": pil_image},  # Image will be processed by SigLIP
-                        {"type": "text", "text": text_prompt},  # User prompt
-                    ],
-                }
-            ]
-
-            # Apply chat template - this handles image token insertion automatically
-            gemma_inputs = self.processor.apply_chat_template(
-                messages,
-                add_generation_prompt=False,  # No generation prompt for embeddings
-                tokenize=True,
-                return_tensors="pt",
-                return_dict=True,  # Returns input_ids, attention_mask, pixel_values, etc.
-            )
-
-            # Move inputs to the device where Gemma is
-            target_device = self.gemma.get_input_embeddings().weight.device
-            gemma_inputs = {k: v.to(target_device) for k, v in gemma_inputs.items()}
-
-            input_ids = gemma_inputs["input_ids"]
-            pixel_values = gemma_inputs["pixel_values"]
-        else:
-            # Training call - use preprocessed inputs from collator
-            target_device = self.gemma.get_input_embeddings().weight.device
-            input_ids = input_ids.to(target_device)
-            pixel_values = pixel_values.to(target_device)
-            if attention_mask is not None:
-                attention_mask = attention_mask.to(target_device)
+        fusion_output = self.fusion(
+            gemma_embeds=gemma_output.embeddings,
+            world_embeds=world_embeds,
+            input_ids=gemma_output.input_ids,
+            attention_mask=gemma_output.attention_mask,
+        )
+        # fusion_output.combined_embeds: (B, combined_len, 2304)
+        # fusion_output.combined_attention_mask: (B, combined_len)
 
         # ========================================
-        # STEP 3: Manually construct input embeddings with vision features
+        # STEP 4: Forward through language model
         # ========================================
-        # This replicates what Gemma3Model.forward() does internally (modeling_gemma3.py:826-956),
-        # but we do it manually so we can inject world embeddings before the language model processes them.
-        # By doing this, world embeddings flow through ALL transformer layers alongside vision and text.
-
-        # 3a. Get text token embeddings (image tokens are placeholders at this point)
-        # Reference: Gemma3Model.forward() line 887-888
-        inputs_embeds = self.gemma.model.language_model.embed_tokens(input_ids)
-
-        # 3b. Process vision through SigLIP + multi-modal projector
-        # Reference: Gemma3Model.forward() line 897-903
-        with torch.no_grad():
-            # Line 898: image_features = self.get_image_features(pixel_values)
-            image_features = self.gemma.model.get_image_features(pixel_values)
-            # Line 899: image_features = image_features.to(inputs_embeds.device, inputs_embeds.dtype)
-            image_features = image_features.to(inputs_embeds.device, inputs_embeds.dtype)
-
-            # 3c. Replace image token placeholders with real SigLIP vision features
-            # Reference: Line 900-903 in Gemma3Model.forward()
-            # Line 900-902: special_image_mask = self.get_placeholder_mask(...)
-            special_image_mask = self.gemma.model.get_placeholder_mask(
-                input_ids, inputs_embeds=inputs_embeds, image_features=image_features
-            )
-            # Line 903: inputs_embeds = inputs_embeds.masked_scatter(special_image_mask, image_features)
-            inputs_embeds = inputs_embeds.masked_scatter(special_image_mask, image_features)
-
-        # Now inputs_embeds contains: [text tokens + real vision features from SigLIP + text tokens]
-        # This is equivalent to what Gemma3Model produces before calling language_model (line 937)
-        embeddings = inputs_embeds  # [B, seq_len, 2560]
-
-        # ========================================
-        # STEP 4: Insert world embeddings between bracket tokens
-        # ========================================
-        # Find bracket positions (input_ids already extracted above)
-        start_positions = (input_ids == self.world_start_id).nonzero(as_tuple=True)[1]
-        end_positions = (input_ids == self.world_end_id).nonzero(as_tuple=True)[1]
-
-        if len(start_positions) > 0 and len(end_positions) > 0:
-            start_pos = start_positions[0].item()
-            end_pos = end_positions[0].item()
-
-            # Slice embeddings: [before_start] + [<start>] + [WORLD] + [<end>] + [after_end]
-            embeddings_before = embeddings[:, : start_pos + 1, :]  # Up to and including <start>
-            embeddings_after = embeddings[:, end_pos:, :]  # From <end> onwards
-
-            # Move world embeddings to target device
-            projected_world_embeds = projected_world_embeds.to(target_device)
-
-            # Concatenate to insert world tokens between brackets
-            combined_embeds = torch.cat([embeddings_before, projected_world_embeds, embeddings_after], dim=1)
-
-            # ========================================
-            # STEP 5: Update attention mask
-            # ========================================
-            # Get attention mask from preprocessing
-            if not preprocessed:
-                attn_mask = gemma_inputs["attention_mask"]
-            else:
-                attn_mask = attention_mask
-
-            attention_mask_before = attn_mask[:, : start_pos + 1]
-            attention_mask_after = attn_mask[:, end_pos:]
-            world_attention_mask = torch.ones(
-                (b, projected_world_embeds.size(1)), dtype=torch.long, device=target_device
-            )
-            combined_attention_mask = torch.cat(
-                [attention_mask_before, world_attention_mask, attention_mask_after], dim=1
-            )
-        else:
-            assert False, "No world brackets found (shouldn't happen, but safety)"
-
-        # ========================================
-        # STEP 6: Prepare labels for training (if provided)
-        # ========================================
-        if labels is not None and len(start_positions) > 0:
-            # For training: Use standard causal LM approach - predict next token
-            # Labels are just the shifted input_ids with world tokens masked out
-
-            num_world = projected_world_embeds.size(1)
-
-            # Build labels matching combined_embeds structure:
-            # [tokens_before | world_tokens | tokens_after]
-            # Mask out world tokens with -100
-
-            labels_before = input_ids[:, :start_pos + 1].to(target_device)  # Up to <start>
-            labels_world = torch.full((b, num_world), -100, dtype=torch.long, device=target_device)  # Mask world
-            labels_after = input_ids[:, end_pos:].to(target_device)  # After <end>
-
-            combined_labels = torch.cat([labels_before, labels_world, labels_after], dim=1)
-        else:
-            combined_labels = None
-
-        # ========================================
-        # STEP 7: Forward through language model (single pass with world embeddings)
-        # ========================================
-        # Now we pass combined_embeds (vision + world + text) through the language model.
-        # This is a SINGLE pass where world embeddings flow through ALL transformer layers.
-        # Reference: Gemma3Model.forward() line 937-948 calls language_model with inputs_embeds
         lm_outputs = self.gemma.language_model(
-            inputs_embeds=combined_embeds,
-            attention_mask=combined_attention_mask,
+            inputs_embeds=fusion_output.combined_embeds,
+            attention_mask=fusion_output.combined_attention_mask,
             return_dict=True,
         )
 
         # ========================================
-        # STEP 8: Apply LM head and compute loss
+        # STEP 5: Apply LM head
         # ========================================
-        # Reference: Gemma3ForConditionalGeneration.forward() line 1094-1119
-        hidden_states = lm_outputs.last_hidden_state
+        logits = self.gemma.lm_head(lm_outputs.last_hidden_state)
 
-        # Apply LM head to get logits
-        logits = self.gemma.lm_head(hidden_states)
-
-        # Compute loss if labels provided
+        # ========================================
+        # STEP 6: Compute loss
+        # ========================================
         loss = None
-        if combined_labels is not None:
-            # Upcast to float if we need to compute the loss to avoid potential precision issues
-            logits_float = logits.float()
-            # Shift so that tokens < n predict n
-            shift_logits = logits_float[..., :-1, :].contiguous()
-            shift_labels = combined_labels[..., 1:].contiguous()
-            # Flatten the tokens
-            loss_fct = nn.CrossEntropyLoss()
-            shift_logits = shift_logits.view(-1, self.gemma.config.text_config.vocab_size)
-            shift_labels = shift_labels.view(-1).to(shift_logits.device)
-            loss = loss_fct(shift_logits, shift_labels)
+        if labels is not None:
+            # Align labels with combined sequence
+            # Find bracket positions to create label mask
+            start_positions = (input_ids == self.world_start_id).nonzero(as_tuple=True)[1]
+            end_positions = (input_ids == self.world_end_id).nonzero(as_tuple=True)[1]
 
-        # Return in compatible format
-        from transformers.modeling_outputs import CausalLMOutputWithPast
+            if len(start_positions) > 0 and len(end_positions) > 0:
+                start_pos = start_positions[0].item()
+                end_pos = end_positions[0].item()
+                batch_size = input_ids.size(0)
+                num_world_tokens = world_embeds.size(1)
 
+                # Build labels: [tokens_before | -100 for world | tokens_after]
+                labels_before = input_ids[:, : start_pos + 1].to(target_device)
+                labels_world = torch.full((batch_size, num_world_tokens), -100, dtype=torch.long, device=target_device)
+                labels_after = input_ids[:, end_pos:].to(target_device)
+
+                combined_labels = torch.cat([labels_before, labels_world, labels_after], dim=1)
+
+                # Shift for causal LM: predict token n from tokens < n
+                shift_logits = logits[..., :-1, :].contiguous().float()
+                shift_labels = combined_labels[..., 1:].contiguous()
+
+                # Compute cross-entropy loss
+                loss_fct = nn.CrossEntropyLoss()
+                vocab_size = self.gemma.config.text_config.vocab_size
+                loss = loss_fct(shift_logits.view(-1, vocab_size), shift_labels.view(-1).to(shift_logits.device))
+
+        # Return in HuggingFace format
         return CausalLMOutputWithPast(
             loss=loss,
             logits=logits,
@@ -660,13 +543,13 @@ class TheWorld(nn.Module):
 
     def generate(
         self,
-        image,
+        image: Union[Image.Image, np.ndarray, Tensor],
         prompt: str,
         max_new_tokens: int = 50,
         temperature: float = 0.0,
-        num_world_steps: int = None,
+        num_world_steps: Optional[int] = None,
         skip_world_tokens: bool = False,
-        **kwargs,
+        **kwargs: Union[str, int, float, bool],
     ) -> str:
         """
         Generate text response for image and prompt.
@@ -740,8 +623,6 @@ class TheWorld(nn.Module):
             # For full generation, we'd need to implement autoregressive decoding
             # For now, delegate to Gemma's generate with world embeddings
             # TODO: Implement proper autoregressive generation with world tokens
-            from transformers import GenerationConfig
-
             generation_config = GenerationConfig(
                 max_new_tokens=max_new_tokens,
                 do_sample=(temperature > 0),
@@ -760,9 +641,13 @@ class TheWorld(nn.Module):
 
         # Decode output (skip input tokens)
         if isinstance(inputs, dict) and "input_ids" in inputs:
-            input_len = inputs["input_ids"].shape[1]
-        else:
+            input_ids_tensor = inputs["input_ids"]
+            assert isinstance(input_ids_tensor, Tensor), "Expected input_ids to be a Tensor"
+            input_len = input_ids_tensor.shape[1]
+        elif isinstance(inputs, Tensor):
             input_len = inputs.shape[1]
+        else:
+            raise ValueError(f"Unsupported inputs type: {type(inputs)}")
 
         generated_ids = outputs[:, input_len:]
         response = self.processor.decode(generated_ids[0], skip_special_tokens=True)

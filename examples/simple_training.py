@@ -1,7 +1,6 @@
-import torch
 from theworld import TheWorld
+from theworld.data import create_theworld_collator
 from PIL import Image
-import numpy as np
 
 
 def main():
@@ -27,45 +26,51 @@ def main():
     print(f"   Trainable parameters: {trainable:,}")
     print(f"   Trainable percentage: {percentage:.4f}%")
     print(f"\n   Trainable components:")
-    print(f"   - temporal_embedding: {sum(p.numel() for p in model.temporal_embedding.parameters()):,}")
-    print(f"   - world_projection: {sum(p.numel() for p in model.world_projection.parameters()):,}")
+    print(f"   - temporal_embedding: {sum(p.numel() for p in model.cosmos_encoder.temporal_embedding.parameters()):,}")
+    print(f"   - world_projection: {sum(p.numel() for p in model.cosmos_encoder.world_projection.parameters()):,}")
 
     # Create dummy training data
     print("\n3. Creating dummy training batch...")
     # Random image (896x896 for Gemma 3)
-    dummy_image = torch.randn(1, 3, 896, 896)
+    dummy_image = Image.new("RGB", (896, 896), color=(100, 150, 200))
 
     # Text prompt
     text_prompt = "What is in this image?"
 
-    # Dummy labels (in reality, these would be the expected output tokens)
-    # For now, just use input_ids as labels for demonstration
+    # Expected answer (label)
+    expected_answer = "This is a test image."
+
+    # Create collator for preprocessing
+    collate_fn = create_theworld_collator(model)
+
+    # Prepare batch
+    batch = [{"image": dummy_image, "text": text_prompt, "label": expected_answer}]
+    inputs = collate_fn(batch)
+
+    # Move tensors to device (preserve TypedDict type)
+    inputs["input_ids"] = inputs["input_ids"].to("cuda")
+    inputs["attention_mask"] = inputs["attention_mask"].to("cuda")
+    inputs["pixel_values"] = inputs["pixel_values"].to("cuda")
+    if inputs["labels"] is not None:
+        inputs["labels"] = inputs["labels"].to("cuda")
+
     print("\n4. Running forward pass...")
 
     # Forward pass
-    outputs = model.forward(
-        input_pixels=dummy_image, text=text_prompt, labels=None  # Will be auto-generated from input_ids in forward()
-    )
+    outputs = model.forward(**inputs)
 
+    assert outputs.logits is not None, "Expected logits in output"
     print(f"   ✓ Forward pass successful!")
-    # Handle both dict and object outputs
-    if isinstance(outputs, dict):
-        logits = outputs["logits"]
-        loss = outputs.get("loss", None)
-    else:
-        logits = outputs.logits
-        loss = outputs.loss if hasattr(outputs, "loss") else None
-
-    print(f"   Output logits shape: {logits.shape}")
-    if loss is not None:
-        print(f"   Loss: {loss.item()}")
+    print(f"   Output logits shape: {outputs.logits.shape}")
+    if outputs.loss is not None:
+        print(f"   Loss: {outputs.loss.item():.4f}")
     else:
         print(f"   Loss: N/A (no labels provided)")
 
     # Backward pass
-    if loss is not None:
+    if outputs.loss is not None:
         print("\n5. Running backward pass...")
-        loss.backward()
+        outputs.loss.backward()
         print("   ✓ Backward pass successful!")
 
         # Check gradients
@@ -87,7 +92,7 @@ def main():
     print("=" * 60)
     print("\nNext steps:")
     print("  1. Load a real dataset with PIL images and labels")
-    print("  2. Create a DataLoader")
+    print("  2. Create a DataLoader with create_theworld_collator(model)")
     print("  3. Set up optimizer (e.g., AdamW)")
     print("  4. Training loop with forward/backward/optimizer steps")
     print("\nTo unfreeze components:")

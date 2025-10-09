@@ -23,12 +23,11 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union, cast
 from tqdm import tqdm
 import re
 
-import torch
-from datasets import load_dataset
+from datasets import load_dataset, Dataset
 from sklearn.metrics import f1_score, confusion_matrix, classification_report
 
 # Add project root to path
@@ -230,16 +229,16 @@ def compute_metrics(
     accuracy = (correct / total) * 100 if total > 0 else 0.0
 
     # F1 scores
-    f1_macro = f1_score(references, predictions, labels=choices, average="macro", zero_division=0) * 100
+    f1_macro = f1_score(references, predictions, labels=choices, average="macro", zero_division="warn") * 100
 
-    f1_weighted = f1_score(references, predictions, labels=choices, average="weighted", zero_division=0) * 100
+    f1_weighted = f1_score(references, predictions, labels=choices, average="weighted", zero_division="warn") * 100
 
     # Confusion matrix
     cm = confusion_matrix(references, predictions, labels=choices)
 
     # Per-choice metrics
     report = classification_report(
-        references, predictions, labels=choices, target_names=choices, output_dict=True, zero_division=0
+        references, predictions, labels=choices, target_names=choices, output_dict=True, zero_division="warn"
     )
 
     return {
@@ -255,7 +254,7 @@ def compute_metrics(
 
 def evaluate_task(
     task: str,
-    model: TheWorld,
+    model: Union[TheWorld, Gemma3Baseline],
     split: str = "test",
     num_samples: Optional[int] = None,
     max_new_tokens: int = 10,
@@ -287,15 +286,17 @@ def evaluate_task(
 
     # Load dataset
     print(f"Loading BLINK/{task} dataset...")
-    dataset = load_dataset("BLINK-Benchmark/BLINK", task, split=split, trust_remote_code=True)
+    dataset_raw = load_dataset("BLINK-Benchmark/BLINK", task, split=split, trust_remote_code=True)
+    dataset = cast(Dataset, dataset_raw)
 
     if num_samples is not None:
-        dataset = dataset.select(range(min(num_samples, len(dataset))))
+        dataset = cast(Dataset, dataset.select(range(min(num_samples, len(dataset)))))
 
     print(f"Dataset size: {len(dataset)} examples")
 
     # Get unique choices from first example
-    choices = sorted(list(set(dataset[0]["choices"])))
+    first_example = dataset[0]
+    choices = sorted(list(set(first_example["choices"])))
     print(f"Choices: {choices}")
 
     # Run inference
@@ -303,7 +304,10 @@ def evaluate_task(
     references = []
     errors = []
 
-    for idx, example in enumerate(tqdm(dataset, desc="Evaluating")):
+    for idx, example_raw in enumerate(tqdm(dataset, desc="Evaluating")):
+        # Cast example to proper type
+        example = cast(Dict[str, Any], example_raw)
+
         # Format question
         prompt = format_question(example)
 
