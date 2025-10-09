@@ -1,8 +1,12 @@
-.PHONY: setup format check install run train train-simple train-hf eval-blink eval-gemma compare-results clean
+.PHONY: setup pace-setup format check install run train train-simple train-hf eval-blink eval-gemma compare-results clean
 
 # Complete setup (recommended for first-time setup)
 setup:
 	bash scripts/setup.sh
+
+# PACE HPC-specific setup (for Georgia Tech PACE cluster)
+pace-setup:
+	bash scripts/pace_setup.sh
 
 # Format code with black
 format:
