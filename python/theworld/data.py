@@ -21,7 +21,6 @@ class TheWorldBatch(TypedDict):
     attention_mask: torch.Tensor
     pixel_values: torch.Tensor
     images: List[Image.Image]
-    texts: List[str]
     labels: Optional[torch.Tensor]  # Optional field
 
 
@@ -163,7 +162,6 @@ def theworld_collate_fn(
             - attention_mask: Attention mask
             - pixel_values: Preprocessed image tensors (for SigLIP, not encoded)
             - images: Raw PIL images (for Cosmos)
-            - texts: Raw text prompts (for Cosmos)
             - labels: Labels for loss computation
     """
     images = [item["image"] for item in batch]
@@ -173,7 +171,10 @@ def theworld_collate_fn(
     # Use processor's chat template to properly format messages with image placeholders
     # This ensures <start_of_image> and <end_of_image> tokens are correctly inserted
     messages_batch = []
-    for image, text in zip(images, texts):
+    for i, (image, text) in enumerate(zip(images, texts)):
+        # DEBUG: Check image type
+        print(f"[DEBUG] Sample {i}: image type = {type(image)}, text = '{text[:50]}...'")
+
         messages = [
             {
                 "role": "user",
@@ -190,14 +191,23 @@ def theworld_collate_fn(
     # We process each item individually because apply_chat_template doesn't support batching
     input_ids_list = []
     attention_mask_list = []
-    for messages in messages_batch:
-        formatted = processor.apply_chat_template(
+    for i, messages in enumerate(messages_batch):
+        formatted = processor.apply_chat_template(  # pyright: ignore[reportAttributeAccessIssue]
             messages,
             tokenize=True,
             add_generation_prompt=False,  # We don't want assistant prefix yet
             return_dict=True,
             return_tensors="pt",
         )
+        # DEBUG: Check token counts
+        ids = formatted["input_ids"][0].tolist()
+        image_soft_token_id = 262144  # <image_soft_token>
+        image_token_count = ids.count(image_soft_token_id)
+        print(
+            f"[DEBUG] Sample {i}: input_ids shape = {formatted['input_ids'].shape}, <image_soft_token> count = {image_token_count}"
+        )
+        print(f"[DEBUG] Sample {i}: first 20 token IDs = {ids[:20]}")
+
         input_ids_list.append(formatted["input_ids"])
         attention_mask_list.append(formatted["attention_mask"])
 
@@ -246,7 +256,6 @@ def theworld_collate_fn(
         "pixel_values": pixel_values,
         "labels": labels,
         "images": images,  # Raw PIL images for Cosmos processing
-        "texts": texts,  # Raw text prompts for Cosmos processing
     }
 
 
@@ -270,11 +279,12 @@ def create_theworld_collator(model):
     """
 
     def collate_fn(batch):
-        # Calculate num_world_tokens based on model configuration
-        # Default: 28x28 spatial tokens per frame
-        spatial_tokens = 28 * 28  # 784
-        num_frames = 1 + model.num_world_steps  # Current + predicted future
-        num_world_tokens = spatial_tokens * num_frames
+        # Estimate num_world_tokens for bracket placement
+        # Cosmos VAE produces variable spatial dimensions based on input size
+        # For 512x512 input: approximately 80x176 = 14,080 tokens
+        # This is an estimate - actual count determined at runtime during forward pass
+        # The brackets just reserve space; actual world tokens inserted during forward()
+        estimated_world_tokens = 14080  # Approximate for typical input sizes
 
         return theworld_collate_fn(
             batch,
@@ -283,7 +293,7 @@ def create_theworld_collator(model):
             max_length=2048,
             world_start_id=model.world_start_id,
             world_end_id=model.world_end_id,
-            num_world_tokens=num_world_tokens,
+            num_world_tokens=estimated_world_tokens,
         )
 
     return collate_fn
