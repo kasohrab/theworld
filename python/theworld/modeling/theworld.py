@@ -22,8 +22,6 @@ class TheWorld(nn.Module):
         gemma_model_name,
         cosmos_model_name="nvidia/Cosmos-Predict2-2B-Video2World",
         device="cuda",
-        num_world_steps=0,
-        max_world_steps=16,
         freeze_gemma_vision=True,
         freeze_gemma_language=True,
         freeze_cosmos_vae=True,
@@ -39,22 +37,19 @@ class TheWorld(nn.Module):
                                 7B: nvidia/Cosmos-Predict2-7B-Video2World,
                                 14B: nvidia/Cosmos-Predict2-14B-Video2World)
             device: Device to load models on
-            num_world_steps: Default number of future frames to predict (0 = current only)
-            max_world_steps: Maximum frames for temporal embeddings
             freeze_gemma_vision: If True, freeze Gemma's vision encoder (SigLIP) [default: True]
             freeze_gemma_language: If True, freeze Gemma's language model [default: True]
             freeze_cosmos_vae: If True, freeze Cosmos VAE encoder [default: True]
             random_projection_init: If True, randomly initialize projection layer (for ablation) [default: False]
 
         Trainable components (by default):
-            - temporal_embedding: Distinguishes between timesteps
-            - world_projection: Projects Cosmos latents to Gemma dimension
+            - world_projection: Projects Cosmos latents (16-dim) to Gemma dimension (2304-dim)
+
+        Note: Cosmos encoder now uses single-frame encoding only (no temporal prediction).
         """
         super(TheWorld, self).__init__()
 
         self.device = device
-        self.num_world_steps = num_world_steps  # How many future frames to predict (0 = current frame only)
-        self.max_world_steps = max_world_steps  # Maximum for temporal embeddings
         self.random_projection_init = random_projection_init  # For ablation studies
 
         # Store model names for checkpointing
@@ -133,12 +128,11 @@ class TheWorld(nn.Module):
 
         # --- Create modular components ---
 
-        # CosmosEncoder: Handles VAE encoding, temporal embeddings, projection
+        # CosmosEncoder: Handles VAE encoding and projection (single-frame only)
         self.cosmos_encoder = CosmosEncoder(
             cosmos_pipe=self.cosmos_pipe,
             cosmos_dim=cosmos_img_dim,
             gemma_dim=gemma_dim,
-            max_world_steps=max_world_steps,
             device=device,
             freeze_vae=freeze_cosmos_vae,
         )
@@ -196,15 +190,10 @@ class TheWorld(nn.Module):
             if hasattr(self.gemma, "model") and hasattr(self.gemma.model, "language_model"):
                 for param in self.gemma.model.language_model.parameters():
                     param.requires_grad = False
-            # Also freeze LM head
-            if hasattr(self.gemma, "lm_head"):
-                for param in self.gemma.lm_head.parameters():
-                    param.requires_grad = False
+            # NOTE: We do NOT freeze lm_head even when freeze_gemma_language=True
+            # The lm_head must remain trainable to allow gradients to flow back to the projection layer
 
-        # CosmosEncoder projection layers are always trainable (not frozen)
-        # These are now accessed through the module
-        for param in self.cosmos_encoder.temporal_embedding.parameters():
-            param.requires_grad = True
+        # CosmosEncoder projection layer is always trainable (not frozen)
         for param in self.cosmos_encoder.world_projection.parameters():
             param.requires_grad = True
 
@@ -276,8 +265,6 @@ class TheWorld(nn.Module):
             "model_config": {
                 "gemma_model_name": self.gemma_model_name,
                 "cosmos_model_name": self.cosmos_model_name,
-                "num_world_steps": self.num_world_steps,
-                "max_world_steps": self.max_world_steps,
             },
             "epoch": epoch,
             "step": step,
@@ -381,8 +368,6 @@ class TheWorld(nn.Module):
         # Get model names from checkpoint
         gemma_model_name = model_config.get("gemma_model_name", "google/gemma-3-4b-it")
         cosmos_model_name = model_config.get("cosmos_model_name", "nvidia/Cosmos-Predict2-2B-Video2World")
-        num_world_steps = model_config.get("num_world_steps", 0)
-        max_world_steps = model_config.get("max_world_steps", 16)
 
         # Get freeze configuration
         freeze_gemma_vision = freeze_config.get("freeze_gemma_vision", True)
@@ -392,16 +377,12 @@ class TheWorld(nn.Module):
         print(f"Initializing TheWorld model with:")
         print(f"  Gemma: {gemma_model_name}")
         print(f"  Cosmos: {cosmos_model_name}")
-        print(f"  num_world_steps: {num_world_steps}")
-        print(f"  max_world_steps: {max_world_steps}")
 
         # Initialize model with configuration from checkpoint
         model = cls(
             gemma_model_name=gemma_model_name,
             cosmos_model_name=cosmos_model_name,
             device=device,
-            num_world_steps=num_world_steps,
-            max_world_steps=max_world_steps,
             freeze_gemma_vision=freeze_gemma_vision,
             freeze_gemma_language=freeze_gemma_language,
             freeze_cosmos_vae=freeze_cosmos_vae,
@@ -432,9 +413,7 @@ class TheWorld(nn.Module):
         pixel_values: Tensor,
         attention_mask: Tensor,
         images: List[Image.Image],
-        texts: List[str],
         labels: Optional[Tensor] = None,
-        num_world_steps: Optional[int] = None,
     ):
         """Forward pass for TheWorld model using modular components.
 
@@ -443,26 +422,16 @@ class TheWorld(nn.Module):
             pixel_values: Preprocessed images for Gemma SigLIP (B, C, H, W)
             attention_mask: Attention mask (B, seq_len)
             images: Raw PIL images for Cosmos (List of B images)
-            texts: Raw text prompts for Cosmos (List of B strings)
             labels: Target labels for loss computation (B, label_len), optional
-            num_world_steps: Override number of future steps (None = use default)
 
         Returns:
             CausalLMOutputWithPast with loss, logits, and other outputs
         """
-        # Use instance default if not provided
-        if num_world_steps is None:
-            num_world_steps = self.num_world_steps
-
         # ========================================
-        # STEP 1: Encode world via Cosmos
+        # STEP 1: Encode world via Cosmos (single-frame only)
         # ========================================
-        world_embeds = self.cosmos_encoder(
-            images=images,
-            texts=texts,
-            num_world_steps=num_world_steps,
-        )
-        # world_embeds: (B, num_world_tokens, 2304) where num_world_tokens = 784 * (1 + num_world_steps)
+        world_embeds = self.cosmos_encoder(images=images)
+        # world_embeds: (B, num_world_tokens, 2304) where num_world_tokens = H × W (spatial tokens)
 
         # ========================================
         # STEP 2: Encode vision+text via Gemma
@@ -569,7 +538,6 @@ class TheWorld(nn.Module):
         prompt: str,
         max_new_tokens: int = 50,
         temperature: float = 0.0,
-        num_world_steps: Optional[int] = None,
         skip_world_tokens: bool = False,
         **kwargs: Union[str, int, float, bool],
     ) -> str:
@@ -581,16 +549,14 @@ class TheWorld(nn.Module):
             prompt: Text prompt/question
             max_new_tokens: Maximum tokens to generate
             temperature: Sampling temperature (0 = greedy)
-            num_world_steps: Override number of world steps (None = use default)
             skip_world_tokens: If True, completely skip world model (ablation mode)
             **kwargs: Additional generation parameters
 
         Returns:
             Generated text response
+
+        Note: World model now uses single-frame encoding only (no temporal prediction).
         """
-        # Use default num_world_steps if not specified
-        if num_world_steps is None:
-            num_world_steps = self.num_world_steps
 
         # Prepare image
         pil_image = self._prepare_image(image)

@@ -289,8 +289,6 @@ def main():
         config.model_name,
         cosmos_model_name=config.cosmos_model_name,
         device=config.device,
-        num_world_steps=config.num_world_steps,
-        max_world_steps=config.max_world_steps,
         freeze_gemma_vision=config.freeze_gemma_vision,
         freeze_gemma_language=config.freeze_gemma_language,
         freeze_cosmos_vae=config.freeze_cosmos_vae,
