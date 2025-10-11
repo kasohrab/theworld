@@ -113,7 +113,7 @@ class DataCompDataset(TorchDataset):
         Raises:
             RuntimeError: If all retry attempts fail
         """
-        max_retries = 10  # Try up to 10 samples before giving up
+        max_retries = 100  # Try up to 100 samples (DataComp has clusters of bad images)
 
         # For streaming, we iterate through the dataset
         if self._is_streaming:
