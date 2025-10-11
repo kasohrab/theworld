@@ -63,24 +63,25 @@ class GemmaVisionEncoder(nn.Module):
 
         # Step 2: Process vision through SigLIP + multi-modal projector
         # Reference: Gemma3Model.forward() line 897-903
-        with torch.no_grad():
-            # Get image features from SigLIP encoder
-            image_features = self.gemma.model.get_image_features(pixel_values)  # (B, num_image_tokens, 2304)
-            image_features = image_features.to(inputs_embeds.device, inputs_embeds.dtype)
+        # IMPORTANT: Don't use torch.no_grad() here! Even though SigLIP is frozen,
+        # we need gradients to flow through these features back to the projection layer
+        # Get image features from SigLIP encoder
+        image_features = self.gemma.model.get_image_features(pixel_values)  # (B, num_image_tokens, 2304)
+        image_features = image_features.to(inputs_embeds.device, inputs_embeds.dtype)
 
-            # Step 3: Replace image token placeholders with real SigLIP vision features
-            # Reference: Gemma3Model.forward() line 900-903
-            # Cast to specific tensor types for get_placeholder_mask
-            # torch.long() and torch.float() return Tensor, but Gemma expects LongTensor/FloatTensor
-            # These are the same type at runtime (LongTensor is just Tensor with dtype=long)
-            input_ids_casted = input_ids.long()
-            image_features_casted = image_features.float()
-            special_image_mask = self.gemma.model.get_placeholder_mask(
-                input_ids_casted,  # pyright: ignore[reportArgumentType]
-                inputs_embeds=inputs_embeds,
-                image_features=image_features_casted,  # pyright: ignore[reportArgumentType]
-            )
-            inputs_embeds = inputs_embeds.masked_scatter(special_image_mask, image_features)
+        # Step 3: Replace image token placeholders with real SigLIP vision features
+        # Reference: Gemma3Model.forward() line 900-903
+        # Cast to specific tensor types for get_placeholder_mask
+        # torch.long() and torch.float() return Tensor, but Gemma expects LongTensor/FloatTensor
+        # These are the same type at runtime (LongTensor is just Tensor with dtype=long)
+        input_ids_casted = input_ids.long()
+        image_features_casted = image_features.float()
+        special_image_mask = self.gemma.model.get_placeholder_mask(
+            input_ids_casted,  # pyright: ignore[reportArgumentType]
+            inputs_embeds=inputs_embeds,
+            image_features=image_features_casted,  # pyright: ignore[reportArgumentType]
+        )
+        inputs_embeds = inputs_embeds.masked_scatter(special_image_mask, image_features)
 
         # Output validation
         assert inputs_embeds.dim() == 3, f"Expected 3D embeddings, got {inputs_embeds.dim()}D"

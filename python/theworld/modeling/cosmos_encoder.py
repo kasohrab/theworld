@@ -4,8 +4,9 @@ import torch
 import torch.nn as nn
 import numpy as np
 from PIL import Image
-from typing import List
-from diffusers.pipelines.cosmos.pipeline_cosmos2_video2world import Cosmos2VideoToWorldPipeline
+from typing import List, cast
+from diffusers.models.autoencoders.autoencoder_kl import AutoencoderKL
+from diffusers.models.modeling_outputs import AutoencoderKLOutput
 from torch import Tensor
 
 
@@ -17,7 +18,7 @@ class CosmosEncoder(nn.Module):
     2. Projection from 16-dim latent space to 2304-dim Gemma space
 
     Args:
-        cosmos_pipe: Cosmos2VideoToWorldPipeline instance (uses only the VAE component)
+        cosmos_vae: AutoencoderKL instance (Cosmos VAE model)
         cosmos_dim: Dimension of Cosmos latent space (default: 16)
         gemma_dim: Dimension of Gemma embedding space (default: 2304)
         device: Device to place parameters on
@@ -32,20 +33,21 @@ class CosmosEncoder(nn.Module):
 
     def __init__(
         self,
-        cosmos_pipe: Cosmos2VideoToWorldPipeline,
+        cosmos_vae: AutoencoderKL,
         cosmos_dim: int = 16,
         gemma_dim: int = 2304,
         device: str = "cuda",
         freeze_vae: bool = True,
     ):
         super().__init__()
-        self.cosmos_pipe = cosmos_pipe
-        self.device = device
+        self.cosmos_vae = cosmos_vae
+        self.device: str = device
         self.cosmos_dim = cosmos_dim
         self.freeze_vae = freeze_vae
 
         # Projection: 16-dim latent → 2304-dim Gemma embedding space
-        self.world_projection = nn.Linear(cosmos_dim, gemma_dim, dtype=torch.bfloat16).to(device)
+        self.world_projection = nn.Linear(cosmos_dim, gemma_dim, dtype=torch.bfloat16)
+        self.world_projection.to(device)
 
     def forward(self, images: List[Image.Image]) -> Tensor:
         """Encode images into world embeddings.
@@ -84,16 +86,15 @@ class CosmosEncoder(nn.Module):
         # Use vae.encode().latent_dist.mode() for deterministic latents
         # Move VAE to device on first use (avoid repeated .to() calls)
         if not hasattr(self, '_vae_device_set'):
-            self.cosmos_pipe.vae = self.cosmos_pipe.vae.to(self.device)
+            target_device: torch.device = torch.device(self.device)
+            _ = self.cosmos_vae.to(target_device)
             self._vae_device_set = True
 
-        if self.freeze_vae:
-            with torch.no_grad():
-                latent_dist = self.cosmos_pipe.vae.encode(cosmos_input_5d).latent_dist
-                latents = latent_dist.mode()  # Deterministic: use mode, not mean or sample
-        else:
-            latent_dist = self.cosmos_pipe.vae.encode(cosmos_input_5d).latent_dist
-            latents = latent_dist.mode()
+        # IMPORTANT: Don't use torch.no_grad() here! Even though VAE is frozen,
+        # we need gradients to flow through these latents back to the projection layer
+        encoder_output = cast(AutoencoderKLOutput, self.cosmos_vae.encode(cosmos_input_5d))
+        latent_dist = encoder_output.latent_dist
+        latents = latent_dist.mode()  # Deterministic: use mode, not mean or sample
 
         # Shape: (B, 16, 1, H, W) - single frame latent
         b, c, t, h, w = latents.shape

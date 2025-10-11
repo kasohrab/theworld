@@ -82,9 +82,12 @@ class EmbeddingFusion(nn.Module):
         embeddings_before = gemma_embeds[:, : start_pos + 1, :]  # Up to and including <start>
         embeddings_after = gemma_embeds[:, end_pos:, :]  # From <end> onwards
 
-        # Move world embeddings to target device
+        # Move world embeddings to target device if needed
+        # CRITICAL: Only move if on different device to preserve computation graph
         device = gemma_embeds.device
-        world_embeds = world_embeds.to(device)
+        if world_embeds.device != device:
+            world_embeds = world_embeds.to(device)
+            # print(f"[FUSION DEBUG] Moved world_embeds to {device}, requires_grad: {world_embeds.requires_grad}")
 
         # Concatenate to insert world tokens between brackets
         combined_embeds = torch.cat([embeddings_before, world_embeds, embeddings_after], dim=1)

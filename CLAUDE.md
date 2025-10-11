@@ -308,6 +308,12 @@ theworld/
 │   ├── datacomp_test.json            # DataComp quick test (100 samples)
 │   ├── datacomp_production.json      # DataComp production (streaming)
 │   └── eval_blink.json               # BLINK benchmark evaluation config
+├── tests/                              # Test suite
+│   ├── test_cosmos_encoder.py        # CosmosEncoder integration tests
+│   └── validation/                   # Ad-hoc validation scripts (NOT run by pytest)
+│       ├── check_model_structure.py  # Model architecture verification
+│       ├── test_gradient_flow.py     # Gradient flow debugging
+│       └── ...                       # Other validation/debugging scripts
 ├── docs/                               # Documentation
 │   ├── world_model_latent_space.md   # Cosmos latent extraction details
 │   ├── autoregressive_world_rollout.md  # Temporal prediction architecture
@@ -322,6 +328,22 @@ theworld/
 ```
 
 ## Common Development Patterns
+
+### Creating Test and Validation Scripts
+
+**Where to put test scripts:**
+- **Formal tests**: Add to `tests/` directory (run by pytest)
+  - Example: `tests/test_cosmos_encoder.py`
+  - Use pytest fixtures and assertions
+  - Should be part of CI/CD pipeline
+
+- **Validation/debugging scripts**: Add to `tests/validation/` directory
+  - Example: `tests/validation/test_gradient_flow.py`
+  - Ad-hoc scripts for debugging, verification, experiments
+  - NOT run by pytest (use `if __name__ == "__main__"` pattern)
+  - Quick throwaway scripts to validate behavior
+
+**Important**: NEVER create test/validation scripts in the repository root. Always use the appropriate tests subdirectory.
 
 ### Adding New Training Configurations
 
@@ -608,6 +630,11 @@ See [Multi-Stage Training Guide](docs/multi_stage_training.md) for detailed work
 - Single-step mode (num_world_steps=0) is much faster than multi-step
 - Memory usage scales with num_world_steps (each frame adds ~784 tokens)
 - Currently only supports single image input (no video sequences yet)
+
+### Known Issues
+
+**RetinaFace Gradient Bug** (Fixed with workaround):
+The `retinaface` library (a dependency of `cosmos_guardrail`) globally disables PyTorch gradients at import time (`torch.set_grad_enabled(False)` in `retinaface/inference_framework.py:4`). This would break all training, but `TheWorld.__init__` automatically re-enables gradients as a workaround. If you import Cosmos components directly, you must manually call `torch.set_grad_enabled(True)` after import. See [docs/retinaface_gradient_bug.md](docs/retinaface_gradient_bug.md) for detailed explanation.
 
 ## Loss Function and Evaluation
 
