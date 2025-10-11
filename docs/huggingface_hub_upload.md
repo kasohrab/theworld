@@ -126,11 +126,20 @@ When you enable Hub uploads, the following are automatically uploaded:
 
 ### 1. Model Checkpoints
 
-All trainable parameters are saved in each checkpoint:
-- Projection layers (always)
-- Optionally: Gemma vision encoder, Gemma language model, Cosmos VAE
-- Optimizer state
-- Training step/epoch information
+**Important**: TheWorld uses a **trainable-parameters-only** checkpoint strategy for efficiency:
+
+- **Only trainable parameters** are saved (~146MB for projection-only training)
+- **Frozen pretrained models** (Gemma, Cosmos) are NOT saved - they reload from HuggingFace
+- **Benefits**:
+  - Much smaller checkpoints (146MB vs ~17GB full model)
+  - Faster uploads and downloads
+  - Always uses the latest pretrained base models
+  - No duplicate parameter storage
+
+**What's included:**
+- Projection layers (always trainable)
+- Newly added special tokens (`<the_world_start>`, `<the_world_end>`)
+- Optionally: Gemma vision encoder, Gemma language model, Cosmos VAE (if unfrozen)
 
 ### 2. Model Card (README.md)
 
@@ -200,122 +209,163 @@ python scripts/train_hf.py --config configs/datacomp_production.json
 
 ## Loading Models from Hub
 
-After uploading, you can load your trained model from anywhere using `from_pretrained()`.
+After uploading, you can load your trained model from anywhere. Since checkpoints contain only trainable parameters, the loading process:
+
+1. Creates a fresh TheWorld instance (loads Gemma + Cosmos from HuggingFace)
+2. Downloads your trained checkpoint from Hub
+3. Loads only the trainable parameters into the model
 
 ### Basic Usage
 
 ```python
 from theworld import TheWorld
+from huggingface_hub import hf_hub_download
+from safetensors.torch import load_file
 
-# Load your trained model
-model = TheWorld.from_pretrained("your-username/theworld-datacomp")
+# Step 1: Create base model (loads pretrained Gemma + Cosmos)
+model = TheWorld(
+    "google/gemma-3-4b-it",
+    freeze_gemma_vision=True,
+    freeze_gemma_language=True,
+    freeze_cosmos_vae=True,
+)
 
-# Use it for inference
-generated_text = model.generate(image, question="What is in this image?")
+# Step 2: Download checkpoint from Hub
+checkpoint_path = hf_hub_download(
+    repo_id="your-username/theworld-datacomp",
+    filename="model.safetensors",  # Main checkpoint at root
+    token="hf_your_token_here",  # For private repos
+)
+
+# Step 3: Load trainable parameters
+state_dict = load_file(checkpoint_path)
+model.load_state_dict(state_dict, strict=False)
+
+# Ready to use!
+model.eval()
 ```
 
-### Loading Specific Checkpoints
+### Loading from Different Checkpoints
 
-If your repository contains multiple checkpoints, you can specify which one to load:
+Checkpoints are stored in the repository root with these filenames:
 
 ```python
-# Load a specific checkpoint
-model = TheWorld.from_pretrained(
-    "your-username/theworld-datacomp",
-    checkpoint_name="checkpoint-1000/pytorch_model.bin"
-)
+# Latest checkpoint (root)
+filename="model.safetensors"
 
-# Load from final model
-model = TheWorld.from_pretrained(
-    "your-username/theworld-datacomp",
-    checkpoint_name="pytorch_model.bin"  # This is the default
-)
+# Final checkpoint (after training completes)
+filename="final/model.safetensors"
+
+# Note: Intermediate checkpoints are also uploaded but may be cleaned up
 ```
 
 ### Loading Private Models
 
-For private models, provide your HuggingFace token:
+For private repositories, provide your HuggingFace token:
 
 ```python
+# Via environment variable (recommended)
 import os
-
-# Option 1: Via environment variable
 os.environ["HF_TOKEN"] = "hf_your_token_here"
-model = TheWorld.from_pretrained("your-username/private-model")
 
-# Option 2: Via parameter
-model = TheWorld.from_pretrained(
-    "your-username/private-model",
-    hf_token="hf_your_token_here"
+checkpoint_path = hf_hub_download(
+    repo_id="your-username/private-model",
+    filename="model.safetensors",
 )
-```
 
-### Command-Line Example
-
-Use the provided example script to load and test a model:
-
-```bash
-# Load from public repository
-python examples/load_from_hub.py --model_id username/theworld-datacomp
-
-# Load from private repository
-export HF_TOKEN="hf_your_token_here"
-python examples/load_from_hub.py --model_id username/private-model
-
-# Load specific checkpoint
-python examples/load_from_hub.py \
-  --model_id username/theworld-datacomp \
-  --checkpoint checkpoint-1000/pytorch_model.bin
+# Or via parameter
+checkpoint_path = hf_hub_download(
+    repo_id="your-username/private-model",
+    filename="model.safetensors",
+    token="hf_your_token_here",
+)
 ```
 
 ### What Gets Downloaded
 
-When you call `from_pretrained()`:
-1. The checkpoint file is downloaded from Hub (cached locally)
-2. Model configuration is extracted (model names, freeze settings, etc.)
-3. A new TheWorld instance is initialized with that configuration
-4. Trainable parameters are loaded from the checkpoint
-5. The model is ready for inference or continued training
+When you load a checkpoint from Hub:
+1. **Checkpoint file** (~146MB for projection-only) is downloaded and cached locally
+2. **Only trainable parameters** are in the checkpoint (projection layer, special tokens)
+3. **Frozen models** (Gemma, Cosmos) are automatically downloaded fresh from HuggingFace
+4. Model is ready for inference or continued training
+
+**Important**: The first time you load a model, it will download:
+- Your checkpoint (~146MB)
+- Base Gemma model (~8GB, cached)
+- Base Cosmos model (~4GB, cached)
+
+Subsequent loads are much faster as base models are cached!
 
 ## Resuming Training from Hub
 
-You can resume training from a checkpoint uploaded to the Hub:
+You can resume training from a checkpoint uploaded to the Hub. The training script will:
+1. Download your checkpoint from Hub
+2. Load the trainable parameters
+3. Continue training from that point
+4. Upload new checkpoints back to Hub
+
+### Method 1: Command Line Argument
 
 ```bash
-# Resume from Hub checkpoint
 export HF_TOKEN="hf_your_token_here"
 python scripts/train_hf.py \
   --config configs/datacomp_production.json \
-  --resume_from username/theworld-datacomp
-
-# The script will:
-# 1. Download the latest checkpoint from Hub
-# 2. Resume training from that checkpoint
-# 3. Continue uploading new checkpoints to Hub
+  --resume_from checkpoint_path_on_hub
 ```
 
-This is useful for:
-- **Continuing training across different machines**: Train on one GPU, resume on another
-- **Collaborative training**: Multiple team members can resume from shared checkpoints
-- **Cloud training**: Start training locally, resume on cloud GPUs
-- **Fault tolerance**: If training stops, resume from the last uploaded checkpoint
+**Note**: Currently HuggingFace Trainer expects a local path or Hub repo structure. For TheWorld's trainable-only checkpoints, you need to:
 
-### Resume Configuration
+1. Download the checkpoint manually first:
+```bash
+# Download checkpoint to local directory
+python -c "
+from huggingface_hub import hf_hub_download
+import shutil
+import os
 
-You can also specify resume checkpoint in your config file:
+checkpoint = hf_hub_download(
+    'username/theworld-datacomp',
+    'model.safetensors',
+    token='hf_your_token_here'
+)
+os.makedirs('./checkpoints/from_hub', exist_ok=True)
+shutil.copy(checkpoint, './checkpoints/from_hub/model.safetensors')
+print('✓ Checkpoint downloaded to ./checkpoints/from_hub')
+"
+```
+
+2. Then resume from local path:
+```bash
+python scripts/train_hf.py \
+  --config configs/datacomp_production.json \
+  --resume_from ./checkpoints/from_hub
+```
+
+### Method 2: Config File
+
+Specify the local checkpoint path in your config:
 
 ```json
 {
-  "resume_from_checkpoint": "username/theworld-datacomp",
+  "resume_from_checkpoint": "./checkpoints/from_hub",
   "push_to_hub": true,
   "hub_model_id": "username/theworld-datacomp"
 }
 ```
 
-Then simply run:
+Then run:
 ```bash
 python scripts/train_hf.py --config configs/my_config.json
 ```
+
+### Use Cases
+
+Resuming from Hub is useful for:
+- **Continuing training across machines**: Train on one GPU, resume on another
+- **Collaborative training**: Multiple team members can resume from shared checkpoints
+- **Cloud training**: Start training locally, resume on cloud GPUs
+- **Fault tolerance**: If training stops, resume from the last uploaded checkpoint
+- **Multi-stage training**: Train projection first, then unfreeze and continue training
 
 ## Troubleshooting
 

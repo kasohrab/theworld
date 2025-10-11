@@ -8,9 +8,9 @@ from theworld.modeling import EmbeddingFusion
 def test_embedding_fusion_basic():
     """Test basic fusion of Gemma and world embeddings."""
     # Setup
-    world_start_id = 1000
-    world_end_id = 1001
-    fusion = EmbeddingFusion(world_start_id=world_start_id, world_end_id=world_end_id)
+    sow_token_id = 1000
+    eow_token_id = 1001
+    fusion = EmbeddingFusion(sow_token_id=sow_token_id, eow_token_id=eow_token_id)
 
     # Create test inputs with brackets at positions 10 and 11
     batch_size = 2
@@ -19,8 +19,8 @@ def test_embedding_fusion_basic():
     num_world_tokens = 784
 
     input_ids = torch.zeros(batch_size, seq_len, dtype=torch.long)
-    input_ids[:, 10] = world_start_id  # <start>
-    input_ids[:, 11] = world_end_id  # <end>
+    input_ids[:, 10] = sow_token_id  # <start_of_world>
+    input_ids[:, 11] = eow_token_id  # <end_of_world>
 
     gemma_embeds = torch.randn(batch_size, seq_len, embed_dim)
     world_embeds = torch.randn(batch_size, num_world_tokens, embed_dim)
@@ -40,9 +40,9 @@ def test_embedding_fusion_basic():
 
 def test_embedding_fusion_preserves_bracket_tokens():
     """Test that fusion keeps the bracket tokens in the sequence."""
-    world_start_id = 1000
-    world_end_id = 1001
-    fusion = EmbeddingFusion(world_start_id=world_start_id, world_end_id=world_end_id)
+    sow_token_id = 1000
+    eow_token_id = 1001
+    fusion = EmbeddingFusion(sow_token_id=sow_token_id, eow_token_id=eow_token_id)
 
     batch_size = 1
     seq_len = 30
@@ -50,8 +50,8 @@ def test_embedding_fusion_preserves_bracket_tokens():
     num_world_tokens = 100
 
     input_ids = torch.zeros(batch_size, seq_len, dtype=torch.long)
-    input_ids[:, 5] = world_start_id
-    input_ids[:, 6] = world_end_id
+    input_ids[:, 5] = sow_token_id
+    input_ids[:, 6] = eow_token_id
 
     gemma_embeds = torch.randn(batch_size, seq_len, embed_dim)
     world_embeds = torch.randn(batch_size, num_world_tokens, embed_dim)
@@ -67,9 +67,9 @@ def test_embedding_fusion_preserves_bracket_tokens():
 
 def test_embedding_fusion_device_consistency():
     """Test that fusion handles device transfers correctly."""
-    world_start_id = 1000
-    world_end_id = 1001
-    fusion = EmbeddingFusion(world_start_id=world_start_id, world_end_id=world_end_id)
+    sow_token_id = 1000
+    eow_token_id = 1001
+    fusion = EmbeddingFusion(sow_token_id=sow_token_id, eow_token_id=eow_token_id)
 
     batch_size = 1
     seq_len = 20
@@ -77,8 +77,8 @@ def test_embedding_fusion_device_consistency():
     num_world_tokens = 50
 
     input_ids = torch.zeros(batch_size, seq_len, dtype=torch.long)
-    input_ids[:, 3] = world_start_id
-    input_ids[:, 4] = world_end_id
+    input_ids[:, 3] = sow_token_id
+    input_ids[:, 4] = eow_token_id
 
     # Gemma embeds on CPU
     gemma_embeds = torch.randn(batch_size, seq_len, embed_dim)
@@ -95,9 +95,9 @@ def test_embedding_fusion_device_consistency():
 
 def test_embedding_fusion_missing_brackets():
     """Test that fusion raises error when bracket tokens are missing."""
-    world_start_id = 1000
-    world_end_id = 1001
-    fusion = EmbeddingFusion(world_start_id=world_start_id, world_end_id=world_end_id)
+    sow_token_id = 1000
+    eow_token_id = 1001
+    fusion = EmbeddingFusion(sow_token_id=sow_token_id, eow_token_id=eow_token_id)
 
     batch_size = 1
     seq_len = 20
@@ -112,7 +112,7 @@ def test_embedding_fusion_missing_brackets():
     attention_mask = torch.ones(batch_size, seq_len)
 
     # Should raise assertion error
-    with pytest.raises(AssertionError, match="No <the_world_start> token found"):
+    with pytest.raises(AssertionError, match="No <start_of_world> token found"):
         fusion(gemma_embeds, world_embeds, input_ids, attention_mask)
 
 

@@ -9,11 +9,11 @@ from .outputs import FusionOutput
 class EmbeddingFusion(nn.Module):
     """Fuse Gemma vision embeddings with Cosmos world embeddings.
 
-    Inserts world tokens between special bracket tokens <the_world_start> and <the_world_end>.
+    Inserts world tokens between special bracket tokens <start_of_world> and <end_of_world>.
 
     Args:
-        world_start_id: Token ID for <the_world_start>
-        world_end_id: Token ID for <the_world_end>
+        sow_token_id: Token ID for <start_of_world> (SOW)
+        eow_token_id: Token ID for <end_of_world> (EOW)
 
     Input shapes:
         gemma_embeds: (B, seq_len, 2304) - From GemmaVisionEncoder
@@ -28,10 +28,10 @@ class EmbeddingFusion(nn.Module):
         where combined_len = seq_len - 2 + num_world_tokens
     """
 
-    def __init__(self, world_start_id: int, world_end_id: int):
+    def __init__(self, sow_token_id: int, eow_token_id: int):
         super().__init__()
-        self.world_start_id = world_start_id
-        self.world_end_id = world_end_id
+        self.sow_token_id = sow_token_id
+        self.eow_token_id = eow_token_id
 
     def forward(
         self,
@@ -66,11 +66,11 @@ class EmbeddingFusion(nn.Module):
         assert attention_mask.shape == (batch_size, seq_len), "attention_mask shape mismatch"
 
         # Find bracket token positions
-        start_positions = (input_ids == self.world_start_id).nonzero(as_tuple=True)[1]
-        end_positions = (input_ids == self.world_end_id).nonzero(as_tuple=True)[1]
+        start_positions = (input_ids == self.sow_token_id).nonzero(as_tuple=True)[1]
+        end_positions = (input_ids == self.eow_token_id).nonzero(as_tuple=True)[1]
 
-        assert len(start_positions) > 0, "No <the_world_start> token found in input_ids"
-        assert len(end_positions) > 0, "No <the_world_end> token found in input_ids"
+        assert len(start_positions) > 0, "No <start_of_world> token found in input_ids"
+        assert len(end_positions) > 0, "No <end_of_world> token found in input_ids"
 
         start_pos = start_positions[0].item()
         end_pos = end_positions[0].item()
@@ -82,9 +82,12 @@ class EmbeddingFusion(nn.Module):
         embeddings_before = gemma_embeds[:, : start_pos + 1, :]  # Up to and including <start>
         embeddings_after = gemma_embeds[:, end_pos:, :]  # From <end> onwards
 
-        # Move world embeddings to target device
+        # Move world embeddings to target device if needed
+        # CRITICAL: Only move if on different device to preserve computation graph
         device = gemma_embeds.device
-        world_embeds = world_embeds.to(device)
+        if world_embeds.device != device:
+            world_embeds = world_embeds.to(device)
+            # print(f"[FUSION DEBUG] Moved world_embeds to {device}, requires_grad: {world_embeds.requires_grad}")
 
         # Concatenate to insert world tokens between brackets
         combined_embeds = torch.cat([embeddings_before, world_embeds, embeddings_after], dim=1)

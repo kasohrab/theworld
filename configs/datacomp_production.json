@@ -1,5 +1,5 @@
 {
-  "_comment": "Production configuration for DataComp-1B with streaming (full 1.4B samples)",
+  "_comment": "Production configuration for DataComp-Small with streaming (full 12.8M samples)",
 
   "model_name": "google/gemma-3-4b-it",
   "cosmos_model_name": "nvidia/Cosmos-Predict2-2B-Video2World",
@@ -12,7 +12,8 @@
   "learning_rate": 0.0001,
   "batch_size": 4,
   "gradient_accumulation_steps": 4,
-  "num_epochs": 1,
+  "num_epochs": 3,
+  "max_steps": null,
   "warmup_steps": 500,
   "weight_decay": 0.01,
   "max_grad_norm": 1.0,
@@ -21,15 +22,15 @@
   "mixed_precision": "bf16",
 
   "output_dir": "./checkpoints/datacomp_production",
-  "save_steps": 1000,
-  "save_total_limit": 5,
+  "save_steps": 50,
+  "save_total_limit": 3,
   "resume_from_checkpoint": null,
 
   "eval_steps": 5000,
   "eval_batch_size": 4,
-  "do_eval": true,
+  "do_eval": false,
 
-  "logging_steps": 100,
+  "logging_steps": 50,
   "log_to_wandb": true,
   "wandb_project": "theworld-datacomp",
   "wandb_run_name": "projection-only-1b",
@@ -41,13 +42,13 @@
   "eval_dataset_path": null,
 
   "dataset_name": "datacomp",
-  "num_samples": null,
-  "streaming": true,
+  "num_samples": 100000,
+  "streaming": false,
   "question_template": "Describe this image simply.",
 
   "hf_token": null,
   "push_to_hub": true,
-  "hub_model_id": null,
+  "hub_model_id": "kasohrab/theworld-datacomp-projection",
   "hub_strategy": "every_save",
   "hub_private_repo": false,
 

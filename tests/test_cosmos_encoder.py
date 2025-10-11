@@ -8,19 +8,25 @@ import pytest
 from PIL import Image
 import numpy as np
 from diffusers.pipelines.cosmos.pipeline_cosmos2_video2world import Cosmos2VideoToWorldPipeline
+from cosmos_guardrail import CosmosSafetyChecker
 from theworld.modeling.cosmos_encoder import CosmosEncoder
 
 
 @pytest.fixture(scope="module")
 def cosmos_encoder():
     """Load Cosmos pipeline and create encoder (shared across tests to save time)."""
+    safety_checker = CosmosSafetyChecker()
     cosmos_pipe = Cosmos2VideoToWorldPipeline.from_pretrained(
         "nvidia/Cosmos-Predict2-2B-Video2World",
         torch_dtype=torch.bfloat16,
+        safety_checker=safety_checker,
         low_cpu_mem_usage=True,
     )
+    # Re-enable gradients after Cosmos import (workaround for retinaface bug)
+    torch.set_grad_enabled(True)
+
     encoder = CosmosEncoder(
-        cosmos_pipe=cosmos_pipe,
+        cosmos_vae=cosmos_pipe.vae,
         cosmos_dim=16,
         gemma_dim=2304,
         device="cuda" if torch.cuda.is_available() else "cpu",
