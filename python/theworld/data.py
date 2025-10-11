@@ -177,12 +177,18 @@ def theworld_collate_fn(
         # DEBUG: Check image type
         print(f"[DEBUG] Sample {i}: image type = {type(image)}, text = '{text[:50]}...'")
 
+        # Ensure image is PIL and RGB (handle grayscale, RGBA, palette, etc.)
+        if isinstance(image, Image.Image):
+            # Convert any image mode to RGB (handles L, LA, P, RGBA, etc.)
+            if image.mode != "RGB":
+                image = image.convert("RGB")
+
         messages = [
             {
                 "role": "user",
                 "content": [
                     {"type": "text", "text": "<start_of_world> <end_of_world>"},  # World token brackets
-                    {"type": "image", "image": image},  # Image placeholder
+                    {"type": "image", "image": image},  # Image placeholder (now guaranteed RGB)
                     {"type": "text", "text": text},  # Question/prompt
                 ],
             }
