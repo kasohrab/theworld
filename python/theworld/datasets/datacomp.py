@@ -173,8 +173,8 @@ class DataCompDataset(TorchDataset):
                 # Return a blank image as fallback
                 image = Image.new("RGB", (224, 224), color=(128, 128, 128))
 
-        # ROBUST RGB CONVERSION - handles all PIL modes
-        # This is critical because cached images may have non-RGB formats
+        # ROBUST RGB CONVERSION & VALIDATION - handles all PIL modes and malformed images
+        # This is critical because cached images may have non-RGB formats or weird dimensions
         try:
             # Validate image is actually loaded
             if not isinstance(image, Image.Image):
@@ -189,13 +189,26 @@ class DataCompDataset(TorchDataset):
                 else:
                     image = image.convert("RGB")
 
-            # Final validation: ensure exactly 3 channels
+            # Validate PIL dimensions (skip tiny/malformed images)
+            width, height = image.size
+            if width < 16 or height < 16:
+                self.num_failed_downloads += 1
+                return None  # Skip degenerate images
+
+            # Final validation: ensure exactly 3 channels and proper array shape
             if len(image.getbands()) != 3:
                 self.num_failed_downloads += 1
                 return None  # Skip invalid images
 
+            # CRITICAL: Validate as numpy array (what processor expects)
+            # This catches weird shapes like (1, 1, 3) that crash the processor
+            arr = np.array(image)
+            if arr.ndim != 3 or arr.shape[2] != 3:
+                self.num_failed_downloads += 1
+                return None  # Skip malformed arrays
+
         except Exception:
-            # Skip any images that fail conversion (corrupted, invalid format, etc.)
+            # Skip any images that fail conversion/validation (corrupted, invalid format, etc.)
             self.num_failed_downloads += 1
             return None
 
