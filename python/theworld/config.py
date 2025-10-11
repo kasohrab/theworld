@@ -75,12 +75,14 @@ class TrainingConfig:
     freeze_gemma_vision: bool = True
     freeze_gemma_language: bool = True
     freeze_cosmos_vae: bool = True
+    load_full_cosmos_pipeline: bool = True  # If False, load only VAE (saves memory)
 
     # Training hyperparameters
     learning_rate: float = 1e-4
     batch_size: int = 4
     gradient_accumulation_steps: int = 4  # Effective batch = 16
     num_epochs: int = 3
+    max_steps: Optional[int] = None  # Maximum training steps (overrides num_epochs if set)
     warmup_steps: int = 100
     weight_decay: float = 0.01
     max_grad_norm: float = 1.0

@@ -24,7 +24,7 @@ from theworld.modeling.fusion import EmbeddingFusion
 torch.set_grad_enabled(True)
 print(f"  [FIX] Re-enabled gradients after import (was disabled by Cosmos pipeline)")
 
-fusion = EmbeddingFusion(world_start_id=12345, world_end_id=12346)
+fusion = EmbeddingFusion(sow_token_id=12345, eow_token_id=12346)
 fusion.train()
 print(f"✓ EmbeddingFusion created (no trainable params, pure ops)")
 
@@ -41,8 +41,8 @@ dummy_world = torch.randn(batch_size, num_world_tokens, embed_dim, dtype=torch.b
 
 # Create input_ids with bracket tokens at positions 10 and 11
 input_ids = torch.zeros(batch_size, seq_len, dtype=torch.long, device="cuda")
-input_ids[0, 10] = 12345  # world_start_id
-input_ids[0, 11] = 12346  # world_end_id
+input_ids[0, 10] = 12345  # sow_token_id
+input_ids[0, 11] = 12346  # eow_token_id
 
 attention_mask = torch.ones(batch_size, seq_len, dtype=torch.long, device="cuda")
 

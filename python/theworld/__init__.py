@@ -10,6 +10,7 @@ from .config import TrainingConfig
 from .data import TheWorldDataset, HFDatasetWrapper, theworld_collate_fn, create_theworld_collator
 from .datasets import DataCompDataset, load_datacomp
 from .baselines import Gemma3Baseline
+from . import constants
 
 __version__ = "0.1.0"
 
@@ -23,4 +24,5 @@ __all__ = [
     "DataCompDataset",
     "load_datacomp",
     "Gemma3Baseline",
+    "constants",
 ]

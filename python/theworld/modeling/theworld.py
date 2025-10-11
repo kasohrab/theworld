@@ -13,7 +13,6 @@ from diffusers.models.autoencoders.autoencoder_kl import AutoencoderKL
 from huggingface_hub import hf_hub_download
 
 from .cosmos_encoder import CosmosEncoder
-from .gemma_vision import GemmaVisionEncoder
 from .fusion import EmbeddingFusion
 
 
@@ -138,15 +137,29 @@ class TheWorld(nn.Module):
         # Gemma3 uses 'hidden_size' in text_config
         gemma_dim = self.gemma.config.text_config.hidden_size
 
-        # Add bracket special tokens for world model embeddings (before creating modules)
-        special_tokens = {"additional_special_tokens": ["<the_world_start>", "<the_world_end>"]}
-        num_added = self.processor.tokenizer.add_special_tokens(special_tokens)
+        # Add bracket special tokens for world model embeddings using Gemma's custom token slots
+        # Gemma reserves 99 custom tokens (tokenizer.special_tokens.CUSTOM + 0 to 98)
+        # We use slots 0 and 1 for <start_of_world> and <end_of_world>
+        custom_tokens = {
+            0: "<start_of_world>",  # SOW - marks beginning of world embeddings
+            1: "<end_of_world>",    # EOW - marks end of world embeddings
+        }
+
+        # Add custom tokens to tokenizer vocabulary
+        num_added = self.processor.tokenizer.add_special_tokens(
+            {"additional_special_tokens": list(custom_tokens.values())}
+        )
+
+        # Resize embedding layer if tokens were added
         if num_added > 0:
             self.gemma.resize_token_embeddings(len(self.processor.tokenizer))
+            print(f"✓ Added {num_added} custom tokens to vocabulary")
 
         # Store token IDs for use in modules
-        self.world_start_id = self.processor.tokenizer.convert_tokens_to_ids("<the_world_start>")
-        self.world_end_id = self.processor.tokenizer.convert_tokens_to_ids("<the_world_end>")
+        self.sow_token_id = self.processor.tokenizer.convert_tokens_to_ids("<start_of_world>")
+        self.eow_token_id = self.processor.tokenizer.convert_tokens_to_ids("<end_of_world>")
+
+        print(f"✓ Custom token IDs: SOW={self.sow_token_id}, EOW={self.eow_token_id}")
 
         # --- Create modular components ---
 
@@ -166,13 +179,10 @@ class TheWorld(nn.Module):
                 nn.init.zeros_(self.cosmos_encoder.world_projection.bias)
             print("⚠ Projection layer randomly initialized (ablation mode)")
 
-        # GemmaVisionEncoder: Handles SigLIP encoding + embedding fusion
-        self.gemma_vision = GemmaVisionEncoder(gemma_model=self.gemma)
-
         # EmbeddingFusion: Handles inserting world tokens between brackets
         self.fusion = EmbeddingFusion(
-            world_start_id=self.world_start_id,
-            world_end_id=self.world_end_id,
+            sow_token_id=self.sow_token_id,
+            eow_token_id=self.eow_token_id,
         )
 
         # Expose device map from Gemma to TheWorld (for HuggingFace Trainer compatibility)
@@ -189,6 +199,16 @@ class TheWorld(nn.Module):
                 self.model_type = "theworld"
                 self.gemma_model_name = gemma_model_name
                 self.cosmos_model_name = cosmos_model_name
+
+            def to_json_string(self):
+                """Return config as JSON string for HuggingFace Trainer compatibility."""
+                import json
+                return json.dumps({
+                    "_name_or_path": self._name_or_path,
+                    "model_type": self.model_type,
+                    "gemma_model_name": self.gemma_model_name,
+                    "cosmos_model_name": self.cosmos_model_name,
+                })
 
         self.config = TheWorldConfig(gemma_model_name, cosmos_model_name)
 
@@ -522,6 +542,8 @@ class TheWorld(nn.Module):
         attention_mask: Tensor,
         images: List[Image.Image],
         labels: Optional[Tensor] = None,
+        use_cache: bool = False,
+        past_key_values: Optional[tuple] = None,
     ):
         """Forward pass for TheWorld model using modular components.
 
@@ -531,9 +553,11 @@ class TheWorld(nn.Module):
             attention_mask: Attention mask (B, seq_len)
             images: Raw PIL images for Cosmos (List of B images)
             labels: Target labels for loss computation (B, label_len), optional
+            use_cache: Whether to return past_key_values for generation (default: False)
+            past_key_values: Cached key/value states from previous forward passes (default: None)
 
         Returns:
-            CausalLMOutputWithPast with loss, logits, and other outputs
+            CausalLMOutputWithPast with loss, logits, and optionally past_key_values
         """
         # ========================================
         # STEP 1: Encode world via Cosmos (single-frame only)
@@ -542,7 +566,7 @@ class TheWorld(nn.Module):
         # world_embeds: (B, num_world_tokens, 2304) where num_world_tokens = H × W (spatial tokens)
 
         # ========================================
-        # STEP 2: Encode vision+text via Gemma
+        # STEP 2: Get multimodal embeddings (vision+text)
         # ========================================
         # Move inputs to device where Gemma is (may be distributed across GPUs)
         target_device = self.gemma.get_input_embeddings().weight.device
@@ -550,12 +574,27 @@ class TheWorld(nn.Module):
         pixel_values = pixel_values.to(target_device)
         attention_mask = attention_mask.to(target_device)
 
-        gemma_output = self.gemma_vision(
-            input_ids=input_ids,
-            pixel_values=pixel_values,
-            attention_mask=attention_mask,
+        # Get text embeddings
+        inputs_embeds = self.gemma.model.language_model.embed_tokens(input_ids)
+
+        # Process vision through SigLIP
+        image_features = self.gemma.model.get_image_features(pixel_values)
+        image_features = image_features.to(inputs_embeds.device, inputs_embeds.dtype)
+
+        # Replace image placeholders with vision features
+        input_ids_casted = input_ids.long()
+        image_features_casted = image_features.float()
+        special_image_mask = self.gemma.model.get_placeholder_mask(
+            input_ids_casted, inputs_embeds=inputs_embeds, image_features=image_features_casted
         )
-        # gemma_output.embeddings: (B, seq_len, 2304) - combined vision+text embeddings
+        multimodal_embeds = inputs_embeds.masked_scatter(special_image_mask, image_features)
+
+        # Wrap in compatible format for fusion module
+        from types import SimpleNamespace
+
+        gemma_output = SimpleNamespace(
+            embeddings=multimodal_embeds, input_ids=input_ids, attention_mask=attention_mask
+        )
 
         # ========================================
         # STEP 3: Fuse embeddings (insert world tokens)
@@ -576,6 +615,8 @@ class TheWorld(nn.Module):
             inputs_embeds=fusion_output.combined_embeds,
             attention_mask=fusion_output.combined_attention_mask,
             return_dict=True,
+            use_cache=use_cache,
+            past_key_values=past_key_values,
         )
 
         # ========================================
@@ -590,8 +631,20 @@ class TheWorld(nn.Module):
         if labels is not None:
             # Align labels with combined sequence
             # Find bracket positions to create label mask
-            start_positions = (input_ids == self.world_start_id).nonzero(as_tuple=True)[1]
-            end_positions = (input_ids == self.world_end_id).nonzero(as_tuple=True)[1]
+            start_positions = (input_ids == self.sow_token_id).nonzero(as_tuple=True)[1]
+            end_positions = (input_ids == self.eow_token_id).nonzero(as_tuple=True)[1]
+
+            # Validation: Ensure bracket tokens are present
+            if len(start_positions) == 0:
+                raise ValueError(
+                    f"<start_of_world> token (ID {self.sow_token_id}) not found in input_ids. "
+                    f"Check that collator is adding world bracket tokens correctly."
+                )
+            if len(end_positions) == 0:
+                raise ValueError(
+                    f"<end_of_world> token (ID {self.eow_token_id}) not found in input_ids. "
+                    f"Check that collator is adding world bracket tokens correctly."
+                )
 
             if len(start_positions) > 0 and len(end_positions) > 0:
                 start_pos = start_positions[0].item()
@@ -619,7 +672,7 @@ class TheWorld(nn.Module):
         return CausalLMOutputWithPast(
             loss=loss,
             logits=logits,
-            past_key_values=lm_outputs.past_key_values,
+            past_key_values=lm_outputs.past_key_values if use_cache else None,
             hidden_states=lm_outputs.hidden_states if hasattr(lm_outputs, "hidden_states") else None,
             attentions=lm_outputs.attentions if hasattr(lm_outputs, "attentions") else None,
         )
@@ -640,6 +693,202 @@ class TheWorld(nn.Module):
         else:
             raise ValueError(f"Unsupported image type: {type(image)}")
 
+    def generate_with_world(
+        self,
+        image: Union[Image.Image, np.ndarray, Tensor],
+        prompt: str,
+        max_new_tokens: int = 50,
+        temperature: float = 0.0,
+        **kwargs: Union[str, int, float, bool],
+    ) -> str:
+        """
+        Generate text response using world model embeddings via KV cache.
+
+        This method properly incorporates world model embeddings into generation by:
+        1. Running one forward pass with world embeddings to populate KV cache
+        2. Using the cached context for efficient autoregressive generation
+
+        Args:
+            image: Input image (PIL, numpy, or tensor)
+            prompt: Text prompt/question
+            max_new_tokens: Maximum tokens to generate
+            temperature: Sampling temperature (0 = greedy)
+            **kwargs: Additional generation parameters (top_k, top_p, etc.)
+
+        Returns:
+            Generated text response
+
+        Note: This is the proper implementation that uses world embeddings during inference.
+        """
+
+        # Ensure model is in eval mode for generation
+        self.eval()
+
+        # 1. Prepare image and inputs with world bracket tokens
+        pil_image = self._prepare_image(image)
+
+        # Format with chat template including world tokens
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "<start_of_world> <end_of_world>"},  # World brackets
+                    {"type": "image", "image": pil_image},
+                    {"type": "text", "text": prompt},
+                ],
+            }
+        ]
+
+        inputs = self.processor.apply_chat_template(
+            messages,
+            tokenize=True,
+            add_generation_prompt=True,  # Adds <start_of_turn>model
+            return_dict=True,  # Force dict output to get pixel_values
+            return_tensors="pt",
+        )
+
+        # 2. Move to device (pixel_values already in inputs from apply_chat_template!)
+        target_device = self.gemma.get_input_embeddings().weight.device
+        inputs = {k: v.to(target_device) if hasattr(v, "to") else v for k, v in inputs.items()}
+
+        # Extract components
+        input_ids = inputs["input_ids"]
+        attention_mask = inputs["attention_mask"]
+        pixel_values = inputs["pixel_values"]  # Use from apply_chat_template, not manual preprocessing!
+
+        # 4. Run forward pass with world embeddings to populate KV cache
+        with torch.no_grad():
+            prompt_outputs = self.forward(
+                input_ids=input_ids,
+                pixel_values=pixel_values,
+                attention_mask=attention_mask,
+                images=[pil_image],
+                labels=None,
+                use_cache=True,  # Enable KV caching
+            )
+
+        # 5. Simple approach: Since forward() already processed world embeddings,
+        # we get logits that include world model context. Use these logits for generation.
+        # We'll do token-by-token generation using the KV cache for efficiency.
+
+        generated_tokens = []
+        current_kv_cache = prompt_outputs.past_key_values
+        eos_token_id = self.processor.tokenizer.eos_token_id
+
+        for _ in range(max_new_tokens):
+            # Get last token logits
+            last_logits = prompt_outputs.logits[:, -1, :]  # (batch_size, vocab_size)
+
+            # Sample or select next token
+            if temperature == 0:
+                next_token = torch.argmax(last_logits, dim=-1, keepdim=True)
+            else:
+                probs = torch.softmax(last_logits / temperature, dim=-1)
+                next_token = torch.multinomial(probs, num_samples=1)
+
+            # Stop if EOS token (CHECK BEFORE APPENDING!)
+            if next_token.item() == eos_token_id:
+                break
+
+            generated_tokens.append(next_token)
+
+            # Continue generation: pass next_token through language model only
+            # (no need to reprocess image/world, those are in KV cache)
+            lm_output = self.gemma.language_model(
+                input_ids=next_token,
+                past_key_values=current_kv_cache,
+                use_cache=True,
+                return_dict=True,
+            )
+            current_kv_cache = lm_output.past_key_values
+
+            # Get logits from LM head
+            hidden_states = lm_output.last_hidden_state
+            logits = self.gemma.lm_head(hidden_states)
+            prompt_outputs = type("Output", (), {"logits": logits, "past_key_values": lm_output.past_key_values})()
+
+        # 6. Decode generated tokens
+        if generated_tokens:
+            new_tokens_tensor = torch.cat(generated_tokens, dim=1)
+            response = self.processor.decode(new_tokens_tensor[0], skip_special_tokens=True)
+        else:
+            response = ""
+
+        return response.strip()
+
+    def _generate_gemma_only(
+        self,
+        image: Union[Image.Image, np.ndarray, Tensor],
+        prompt: str,
+        max_new_tokens: int = 50,
+        temperature: float = 0.0,
+        **kwargs: Union[str, int, float, bool],
+    ) -> str:
+        """
+        Generate using only Gemma (no world model) - for ablation studies.
+
+        Args:
+            image: Input image (PIL, numpy, or tensor)
+            prompt: Text prompt/question
+            max_new_tokens: Maximum tokens to generate
+            temperature: Sampling temperature (0 = greedy)
+            **kwargs: Additional generation parameters
+
+        Returns:
+            Generated text response (Gemma baseline)
+        """
+
+        pil_image = self._prepare_image(image)
+
+        # Format WITHOUT world bracket tokens
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": pil_image},
+                    {"type": "text", "text": prompt},
+                ],
+            }
+        ]
+
+        inputs = self.processor.apply_chat_template(
+            messages,
+            tokenize=True,
+            add_generation_prompt=True,
+            return_tensors="pt",
+        )
+
+        # Move to device and prepare for generate
+        if isinstance(inputs, dict):
+            inputs = {k: v.to(self.gemma.device) if hasattr(v, "to") else v for k, v in inputs.items()}
+            input_ids = inputs["input_ids"]
+        elif isinstance(inputs, Tensor):
+            inputs = inputs.to(self.gemma.device)
+            input_ids = inputs
+            inputs = {"input_ids": input_ids}
+        else:
+            raise ValueError(f"Unsupported inputs type: {type(inputs)}")
+
+        # Generate using Gemma only
+        with torch.no_grad():
+            outputs = self.gemma.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                do_sample=(temperature > 0),
+                temperature=temperature if temperature > 0 else 1.0,
+                pad_token_id=self.processor.tokenizer.pad_token_id,
+                eos_token_id=self.processor.tokenizer.eos_token_id,
+                **kwargs,
+            )
+
+        # Decode
+        input_len = input_ids.shape[1]
+
+        generated_ids = outputs[:, input_len:]
+        response = self.processor.decode(generated_ids[0], skip_special_tokens=True)
+
+        return response.strip()
+
     def generate(
         self,
         image: Union[Image.Image, np.ndarray, Tensor],
@@ -652,100 +901,30 @@ class TheWorld(nn.Module):
         """
         Generate text response for image and prompt.
 
+        This method routes to either:
+        - World-aware generation (uses world embeddings via KV cache) [DEFAULT]
+        - Gemma-only baseline (ablation mode, skip_world_tokens=True)
+
         Args:
             image: Input image (PIL, numpy, or tensor)
             prompt: Text prompt/question
             max_new_tokens: Maximum tokens to generate
             temperature: Sampling temperature (0 = greedy)
-            skip_world_tokens: If True, completely skip world model (ablation mode)
-            **kwargs: Additional generation parameters
+            skip_world_tokens: If True, use Gemma baseline without world model (ablation mode)
+            **kwargs: Additional generation parameters (top_k, top_p, etc.)
 
         Returns:
             Generated text response
 
-        Note: World model now uses single-frame encoding only (no temporal prediction).
+        Example:
+            >>> model = TheWorld("google/gemma-3-4b-it")
+            >>> response = model.generate(image, "What is in this image?")  # Uses world model
+            >>> baseline = model.generate(image, "What is in this image?", skip_world_tokens=True)  # Ablation
         """
 
-        # Prepare image
-        pil_image = self._prepare_image(image)
-
-        # Format with chat template
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image", "image": pil_image},
-                    {"type": "text", "text": prompt},
-                ],
-            }
-        ]
-
-        # Process inputs with Gemma processor
-        inputs = self.processor.apply_chat_template(
-            messages,
-            tokenize=True,
-            add_generation_prompt=True,
-            return_tensors="pt",
-        )
-
-        # Move to device
-        if hasattr(inputs, "to"):
-            inputs = inputs.to(self.gemma.device)
-        elif isinstance(inputs, dict):
-            inputs = {k: v.to(self.gemma.device) if hasattr(v, "to") else v for k, v in inputs.items()}
-
-        # For ablation: skip world tokens entirely
         if skip_world_tokens:
-            # Use Gemma directly without world model
-            with torch.no_grad():
-                if temperature == 0.0:
-                    outputs = self.gemma.generate(
-                        **inputs,
-                        max_new_tokens=max_new_tokens,
-                        do_sample=False,
-                        pad_token_id=self.processor.tokenizer.pad_token_id,
-                    )
-                else:
-                    outputs = self.gemma.generate(
-                        **inputs,
-                        max_new_tokens=max_new_tokens,
-                        do_sample=True,
-                        temperature=temperature,
-                        pad_token_id=self.processor.tokenizer.pad_token_id,
-                    )
+            # Ablation: Use Gemma-only baseline (no world model)
+            return self._generate_gemma_only(image, prompt, max_new_tokens, temperature, **kwargs)
         else:
-            # Use TheWorld forward pass (includes world tokens)
-            # Note: This is a simplified implementation
-            # For full generation, we'd need to implement autoregressive decoding
-            # For now, delegate to Gemma's generate with world embeddings
-            # TODO: Implement proper autoregressive generation with world tokens
-            generation_config = GenerationConfig(
-                max_new_tokens=max_new_tokens,
-                do_sample=(temperature > 0),
-                temperature=temperature if temperature > 0 else 1.0,
-                pad_token_id=self.processor.tokenizer.pad_token_id,
-                eos_token_id=self.processor.tokenizer.eos_token_id,
-            )
-
-            # For now, use Gemma's generate (this is a limitation - doesn't fully use world tokens)
-            # A proper implementation would require custom generation loop
-            with torch.no_grad():
-                outputs = self.gemma.generate(
-                    **inputs,
-                    generation_config=generation_config,
-                )
-
-        # Decode output (skip input tokens)
-        if isinstance(inputs, dict) and "input_ids" in inputs:
-            input_ids_tensor = inputs["input_ids"]
-            assert isinstance(input_ids_tensor, Tensor), "Expected input_ids to be a Tensor"
-            input_len = input_ids_tensor.shape[1]
-        elif isinstance(inputs, Tensor):
-            input_len = inputs.shape[1]
-        else:
-            raise ValueError(f"Unsupported inputs type: {type(inputs)}")
-
-        generated_ids = outputs[:, input_len:]
-        response = self.processor.decode(generated_ids[0], skip_special_tokens=True)
-
-        return response.strip()
+            # Use world-aware generation (proper implementation with KV cache)
+            return self.generate_with_world(image, prompt, max_new_tokens, temperature, **kwargs)
