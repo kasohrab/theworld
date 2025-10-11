@@ -1,5 +1,5 @@
 {
-  "_comment": "Production configuration for DataComp-Small with streaming (full 12.8M samples)",
+  "_comment": "Production configuration for full DataComp-Small (12.8M samples, 1 epoch, 3-hour windows)",
 
   "model_name": "google/gemma-3-4b-it",
   "cosmos_model_name": "nvidia/Cosmos-Predict2-2B-Video2World",
@@ -12,7 +12,7 @@
   "learning_rate": 0.0001,
   "batch_size": 4,
   "gradient_accumulation_steps": 4,
-  "num_epochs": 3,
+  "num_epochs": 1,
   "max_steps": null,
   "warmup_steps": 500,
   "weight_decay": 0.01,
@@ -22,8 +22,8 @@
   "mixed_precision": "bf16",
 
   "output_dir": "./checkpoints/datacomp_production",
-  "save_steps": 50,
-  "save_total_limit": 3,
+  "save_steps": 250,
+  "save_total_limit": 2,
   "resume_from_checkpoint": null,
 
   "eval_steps": 5000,
@@ -33,7 +33,7 @@
   "logging_steps": 50,
   "log_to_wandb": true,
   "wandb_project": "theworld-datacomp",
-  "wandb_run_name": "projection-only-1b",
+  "wandb_run_name": "projection-only-full-12M",
   "log_to_tensorboard": true,
 
   "max_seq_length": 2048,
@@ -42,7 +42,7 @@
   "eval_dataset_path": null,
 
   "dataset_name": "datacomp",
-  "num_samples": 100000,
+  "num_samples": null,
   "streaming": false,
   "question_template": "Describe this image simply.",
 
@@ -52,5 +52,6 @@
   "hub_strategy": "every_save",
   "hub_private_repo": false,
 
-  "device": "cuda"
+  "device": "cuda:1",
+  "load_full_cosmos_pipeline": true
 }
