@@ -182,9 +182,6 @@ def theworld_collate_fn(
     # This ensures <start_of_image> and <end_of_image> tokens are correctly inserted
     messages_batch = []
     for i, (image, text) in enumerate(zip(images, texts)):
-        # DEBUG: Check image type
-        print(f"[DEBUG] Sample {i}: image type = {type(image)}, text = '{text[:50]}...''")
-
         messages = [
             {
                 "role": "user",
@@ -210,23 +207,6 @@ def theworld_collate_fn(
             return_dict=True,
             return_tensors="pt",
         )
-        # Validation: Check token structure
-        ids = formatted["input_ids"][0].tolist()
-        image_token_count = ids.count(IMAGE_SOFT_TOKEN_ID)
-
-        # Validate BOS token at position 0
-        if ids[0] != BOS_TOKEN_ID:
-            print(f"[WARNING] Sample {i}: BOS token missing at position 0! Found token ID {ids[0]} instead.")
-
-        # Validate image tokens present
-        if image_token_count == 0:
-            print(f"[WARNING] Sample {i}: No image tokens found after applying chat template!")
-
-        print(
-            f"[DEBUG] Sample {i}: input_ids shape = {formatted['input_ids'].shape}, <image_soft_token> count = {image_token_count}"
-        )
-        print(f"[DEBUG] Sample {i}: first 20 token IDs = {ids[:20]}")
-
         input_ids_list.append(formatted["input_ids"])
         attention_mask_list.append(formatted["attention_mask"])
 

@@ -148,13 +148,13 @@ class DataCompDataset(TorchDataset):
             )
 
     def _process_item(self, item: Dict) -> Optional[Dict[str, Any]]:
-        """Process a single dataset item.
+        """Process a single dataset item with robust RGB conversion.
 
         Args:
             item: Raw item from HuggingFace dataset
 
         Returns:
-            Processed item or None if image download fails
+            Processed item or None if image download/conversion fails
         """
         # Extract URL and caption
         url = item.get("url") or item.get("default/url")
@@ -172,6 +172,32 @@ class DataCompDataset(TorchDataset):
             else:
                 # Return a blank image as fallback
                 image = Image.new("RGB", (224, 224), color=(128, 128, 128))
+
+        # ROBUST RGB CONVERSION - handles all PIL modes
+        # This is critical because cached images may have non-RGB formats
+        try:
+            # Validate image is actually loaded
+            if not isinstance(image, Image.Image):
+                self.num_failed_downloads += 1
+                return None
+
+            # Force RGB conversion for all images
+            if image.mode != "RGB":
+                # Palette images (P, PA) need two-step conversion to avoid transparency issues
+                if image.mode in ("P", "PA"):
+                    image = image.convert("RGBA").convert("RGB")
+                else:
+                    image = image.convert("RGB")
+
+            # Final validation: ensure exactly 3 channels
+            if len(image.getbands()) != 3:
+                self.num_failed_downloads += 1
+                return None  # Skip invalid images
+
+        except Exception:
+            # Skip any images that fail conversion (corrupted, invalid format, etc.)
+            self.num_failed_downloads += 1
+            return None
 
         return {
             "image": image,
