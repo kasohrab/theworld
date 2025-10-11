@@ -166,7 +166,15 @@ def theworld_collate_fn(
             - images: Raw PIL images (for Cosmos)
             - labels: Labels for loss computation
     """
-    images = [item["image"] for item in batch]
+    # Extract and convert all images to RGB upfront (before ANY processing)
+    images = []
+    for item in batch:
+        img = item["image"]
+        # Convert any non-RGB image to RGB (handles L/grayscale, LA, P/palette, RGBA, etc.)
+        if isinstance(img, Image.Image) and img.mode != "RGB":
+            img = img.convert("RGB")
+        images.append(img)
+
     texts = [item["text"] for item in batch]
     labels_raw = [item.get("label", None) for item in batch]
 
@@ -175,13 +183,7 @@ def theworld_collate_fn(
     messages_batch = []
     for i, (image, text) in enumerate(zip(images, texts)):
         # DEBUG: Check image type
-        print(f"[DEBUG] Sample {i}: image type = {type(image)}, text = '{text[:50]}...'")
-
-        # Ensure image is PIL and RGB (handle grayscale, RGBA, palette, etc.)
-        if isinstance(image, Image.Image):
-            # Convert any image mode to RGB (handles L, LA, P, RGBA, etc.)
-            if image.mode != "RGB":
-                image = image.convert("RGB")
+        print(f"[DEBUG] Sample {i}: image type = {type(image)}, text = '{text[:50]}...''")
 
         messages = [
             {
