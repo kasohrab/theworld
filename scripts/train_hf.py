@@ -135,8 +135,8 @@ def load_datasets(config: TrainingConfig):
             print(f"⚠ HuggingFace authentication failed: {e}")
 
     if config.dataset_name == "datacomp":
-        print(f"Loading DataComp-1B dataset...")
-        print(f"  Samples: {config.num_samples if config.num_samples else 'all (1.4B)'}")
+        print(f"Loading DataComp-Small dataset...")
+        print(f"  Samples: {config.num_samples if config.num_samples else 'all (12.8M)'}")
         print(f"  Streaming: {config.streaming}")
 
         train_dataset = load_datacomp(
@@ -292,6 +292,7 @@ def main():
         freeze_gemma_vision=config.freeze_gemma_vision,
         freeze_gemma_language=config.freeze_gemma_language,
         freeze_cosmos_vae=config.freeze_cosmos_vae,
+        load_full_cosmos_pipeline=config.load_full_cosmos_pipeline,
     )
 
     # Enable gradient checkpointing if configured
@@ -308,9 +309,20 @@ def main():
     # Load datasets
     print(f"\nLoading datasets...")
     train_dataset, eval_dataset = load_datasets(config)
-    print(f"  Train size: {len(train_dataset)}")
+
+    # Handle streaming datasets (no length)
+    try:
+        train_size = len(train_dataset)
+        print(f"  Train size: {train_size:,}")
+    except TypeError:
+        print(f"  Train size: streaming (no length)")
+
     if eval_dataset:
-        print(f"  Eval size: {len(eval_dataset)}")
+        try:
+            eval_size = len(eval_dataset)
+            print(f"  Eval size: {eval_size:,}")
+        except TypeError:
+            print(f"  Eval size: streaming (no length)")
 
     # Create data collator
     data_collator = create_theworld_collator(model)
@@ -333,6 +345,7 @@ def main():
         output_dir=config.output_dir,
         # Training
         num_train_epochs=config.num_epochs,
+        max_steps=config.max_steps if config.max_steps is not None else -1,  # -1 = use num_epochs
         per_device_train_batch_size=config.batch_size,
         per_device_eval_batch_size=config.eval_batch_size if config.eval_batch_size is not None else config.batch_size,
         gradient_accumulation_steps=config.gradient_accumulation_steps,
@@ -373,16 +386,22 @@ def main():
     if config.log_to_wandb:
         import wandb
 
-        wandb.init(
-            project=config.wandb_project,
-            name=config.wandb_run_name,
-            config=config.to_dict(),
-        )
-        # Ensure report_to is a list before appending
-        if isinstance(training_args.report_to, list):
-            training_args.report_to.append("wandb")
-        else:
-            training_args.report_to = ["wandb"]
+        try:
+            wandb.init(
+                project=config.wandb_project,
+                name=config.wandb_run_name,
+                config=config.to_dict(),
+            )
+            # Ensure report_to is a list before appending
+            if isinstance(training_args.report_to, list):
+                training_args.report_to.append("wandb")
+            else:
+                training_args.report_to = ["wandb"]
+            print("✓ Wandb logging enabled")
+        except Exception as e:
+            print(f"⚠ Wandb initialization failed: {e}")
+            print("  Continuing with TensorBoard logging only")
+            print("  To enable wandb: Run 'wandb login' or set WANDB_API_KEY environment variable")
 
     # Create Trainer
     trainer = Trainer(

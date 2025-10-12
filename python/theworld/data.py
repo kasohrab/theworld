@@ -10,6 +10,8 @@ from PIL import Image
 import numpy as np
 from pathlib import Path
 
+from .constants import BOS_TOKEN_ID, IMAGE_SOFT_TOKEN_ID
+
 if TYPE_CHECKING:
     from transformers import AutoProcessor, AutoTokenizer
 
@@ -135,8 +137,8 @@ def theworld_collate_fn(
     processor: "AutoProcessor",
     tokenizer: "AutoTokenizer",
     max_length: int = 2048,
-    world_start_id: Optional[int] = None,  # Unused but kept for compatibility
-    world_end_id: Optional[int] = None,  # Unused but kept for compatibility
+    sow_token_id: Optional[int] = None,  # Unused but kept for compatibility
+    eow_token_id: Optional[int] = None,  # Unused but kept for compatibility
     num_world_tokens: int = 784,  # Default: 28x28 for single frame
 ) -> TheWorldBatch:
     """Collate function for batching TheWorld inputs.
@@ -152,8 +154,8 @@ def theworld_collate_fn(
         processor: Gemma processor (for image preprocessing and tokenization)
         tokenizer: Gemma tokenizer (for text)
         max_length: Maximum sequence length
-        world_start_id: Token ID for <the_world_start> (unused, for compatibility)
-        world_end_id: Token ID for <the_world_end> (unused, for compatibility)
+        sow_token_id: Token ID for <start_of_world> (unused, for compatibility)
+        eow_token_id: Token ID for <end_of_world> (unused, for compatibility)
         num_world_tokens: Number of world tokens (unused, for compatibility)
 
     Returns:
@@ -164,7 +166,15 @@ def theworld_collate_fn(
             - images: Raw PIL images (for Cosmos)
             - labels: Labels for loss computation
     """
-    images = [item["image"] for item in batch]
+    # Extract and convert all images to RGB upfront (before ANY processing)
+    images = []
+    for item in batch:
+        img = item["image"]
+        # Convert any non-RGB image to RGB (handles L/grayscale, LA, P/palette, RGBA, etc.)
+        if isinstance(img, Image.Image) and img.mode != "RGB":
+            img = img.convert("RGB")
+        images.append(img)
+
     texts = [item["text"] for item in batch]
     labels_raw = [item.get("label", None) for item in batch]
 
@@ -172,15 +182,12 @@ def theworld_collate_fn(
     # This ensures <start_of_image> and <end_of_image> tokens are correctly inserted
     messages_batch = []
     for i, (image, text) in enumerate(zip(images, texts)):
-        # DEBUG: Check image type
-        print(f"[DEBUG] Sample {i}: image type = {type(image)}, text = '{text[:50]}...'")
-
         messages = [
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": "<the_world_start> <the_world_end>"},  # World token brackets
-                    {"type": "image", "image": image},  # Image placeholder
+                    {"type": "text", "text": "<start_of_world> <end_of_world>"},  # World token brackets
+                    {"type": "image", "image": image},  # Image placeholder (now guaranteed RGB)
                     {"type": "text", "text": text},  # Question/prompt
                 ],
             }
@@ -191,6 +198,7 @@ def theworld_collate_fn(
     # We process each item individually because apply_chat_template doesn't support batching
     input_ids_list = []
     attention_mask_list = []
+    pixel_values_list = []  # Extract pixel_values from apply_chat_template
     for i, messages in enumerate(messages_batch):
         formatted = processor.apply_chat_template(  # pyright: ignore[reportAttributeAccessIssue]
             messages,
@@ -199,17 +207,16 @@ def theworld_collate_fn(
             return_dict=True,
             return_tensors="pt",
         )
-        # DEBUG: Check token counts
-        ids = formatted["input_ids"][0].tolist()
-        image_soft_token_id = 262144  # <image_soft_token>
-        image_token_count = ids.count(image_soft_token_id)
-        print(
-            f"[DEBUG] Sample {i}: input_ids shape = {formatted['input_ids'].shape}, <image_soft_token> count = {image_token_count}"
-        )
-        print(f"[DEBUG] Sample {i}: first 20 token IDs = {ids[:20]}")
-
         input_ids_list.append(formatted["input_ids"])
         attention_mask_list.append(formatted["attention_mask"])
+
+        # Extract pixel_values from apply_chat_template (already preprocessed!)
+        if "pixel_values" in formatted:
+            pixel_values_list.append(formatted["pixel_values"])
+        else:
+            # Fallback: manual preprocessing if not present (shouldn't happen)
+            processed = processor.image_processor(images=images[i], return_tensors="pt")
+            pixel_values_list.append(processed["pixel_values"])
 
     # Pad to same length
     max_len = max(ids.size(1) for ids in input_ids_list)
@@ -220,18 +227,19 @@ def theworld_collate_fn(
         input_ids[i, : ids.size(1)] = ids
         attention_mask[i, : mask.size(1)] = mask
 
-    # Preprocess images for SigLIP (resize, normalize - NO encoding)
-    # This is just tensor preprocessing, not running through the vision encoder
-    pixel_values_list = []
-    for image in images:
-        # Use image_processor to preprocess (resize, normalize) but NOT encode
-        # This returns tensors ready for SigLIP input
-        processed_image = processor.image_processor(  # pyright: ignore[reportAttributeAccessIssue]
-            images=image,
-            return_tensors="pt",
-        )
-        pixel_values_list.append(processed_image["pixel_values"])
+    # Validate SOW/EOW tokens present (if sow_token_id and eow_token_id are provided)
+    if sow_token_id is not None and eow_token_id is not None:
+        for i in range(len(input_ids)):
+            ids_list = input_ids[i].tolist()
+            sow_count = ids_list.count(sow_token_id)
+            eow_count = ids_list.count(eow_token_id)
+            if sow_count != 1 or eow_count != 1:
+                print(
+                    f"[WARNING] Sample {i}: Expected 1 SOW and 1 EOW token, "
+                    f"found {sow_count} SOW and {eow_count} EOW"
+                )
 
+    # Concatenate pixel_values (already extracted from apply_chat_template above)
     pixel_values = torch.cat(pixel_values_list, dim=0)
 
     # Process labels if provided
@@ -291,8 +299,8 @@ def create_theworld_collator(model):
             processor=model.processor,
             tokenizer=model.processor.tokenizer,
             max_length=2048,
-            world_start_id=model.world_start_id,
-            world_end_id=model.world_end_id,
+            sow_token_id=model.sow_token_id,
+            eow_token_id=model.eow_token_id,
             num_world_tokens=estimated_world_tokens,
         )
 

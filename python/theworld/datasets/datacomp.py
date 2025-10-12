@@ -1,10 +1,10 @@
 """
-DataComp-1B dataset loader for TheWorld model.
+DataComp-Small dataset loader for TheWorld model.
 
-DataComp-1B is a large-scale image-text dataset with 1.4B samples.
+DataComp-Small is a large-scale image-text dataset with 12.8M samples.
 Images are provided as URLs that need to be downloaded on-the-fly.
 
-Dataset: https://huggingface.co/datasets/mlfoundations/datacomp_1b
+Dataset: https://huggingface.co/datasets/mlfoundations/datacomp_small
 """
 
 import requests
@@ -42,7 +42,7 @@ def download_image(url: str, timeout: int = 5, max_retries: int = 3) -> Optional
 
 
 class DataCompDataset(TorchDataset):
-    """PyTorch Dataset wrapper for DataComp-1B.
+    """PyTorch Dataset wrapper for DataComp-Small.
 
     Handles:
     - Loading from HuggingFace datasets
@@ -52,7 +52,7 @@ class DataCompDataset(TorchDataset):
 
     Example:
         >>> from datasets import load_dataset
-        >>> hf_dataset = load_dataset("mlfoundations/datacomp_1b", split="train", streaming=True)
+        >>> hf_dataset = load_dataset("mlfoundations/datacomp_small", split="train", streaming=True)
         >>> dataset = DataCompDataset(hf_dataset, num_samples=1000)
     """
 
@@ -90,13 +90,16 @@ class DataCompDataset(TorchDataset):
     def __len__(self) -> int:
         """Return dataset length.
 
-        For streaming datasets, returns num_samples if set, otherwise raises error.
+        For streaming datasets, returns num_samples if set, otherwise returns 12.8M
+        (the actual size of DataComp-Small). Actual iteration is controlled by max_steps in Trainer.
         """
         if self._is_streaming:
             if self.num_samples is not None:
                 return self.num_samples
             else:
-                raise TypeError("Streaming dataset has no length. Set num_samples to enable.")
+                # Return the actual DataComp-Small size: 12.8 million samples
+                # Actual iteration is controlled by max_steps in Trainer
+                return 12_800_000
         return len(self.hf_dataset)
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
@@ -110,7 +113,7 @@ class DataCompDataset(TorchDataset):
         Raises:
             RuntimeError: If all retry attempts fail
         """
-        max_retries = 10  # Try up to 10 samples before giving up
+        max_retries = 100  # Try up to 100 samples (DataComp has clusters of bad images)
 
         # For streaming, we iterate through the dataset
         if self._is_streaming:
@@ -145,13 +148,13 @@ class DataCompDataset(TorchDataset):
             )
 
     def _process_item(self, item: Dict) -> Optional[Dict[str, Any]]:
-        """Process a single dataset item.
+        """Process a single dataset item with robust RGB conversion.
 
         Args:
             item: Raw item from HuggingFace dataset
 
         Returns:
-            Processed item or None if image download fails
+            Processed item or None if image download/conversion fails
         """
         # Extract URL and caption
         url = item.get("url") or item.get("default/url")
@@ -170,6 +173,45 @@ class DataCompDataset(TorchDataset):
                 # Return a blank image as fallback
                 image = Image.new("RGB", (224, 224), color=(128, 128, 128))
 
+        # ROBUST RGB CONVERSION & VALIDATION - handles all PIL modes and malformed images
+        # This is critical because cached images may have non-RGB formats or weird dimensions
+        try:
+            # Validate image is actually loaded
+            if not isinstance(image, Image.Image):
+                self.num_failed_downloads += 1
+                return None
+
+            # Force RGB conversion for all images
+            if image.mode != "RGB":
+                # Palette images (P, PA) need two-step conversion to avoid transparency issues
+                if image.mode in ("P", "PA"):
+                    image = image.convert("RGBA").convert("RGB")
+                else:
+                    image = image.convert("RGB")
+
+            # Validate PIL dimensions (skip tiny/malformed images)
+            width, height = image.size
+            if width < 16 or height < 16:
+                self.num_failed_downloads += 1
+                return None  # Skip degenerate images
+
+            # Final validation: ensure exactly 3 channels and proper array shape
+            if len(image.getbands()) != 3:
+                self.num_failed_downloads += 1
+                return None  # Skip invalid images
+
+            # CRITICAL: Validate as numpy array (what processor expects)
+            # This catches weird shapes like (1, 1, 3) that crash the processor
+            arr = np.array(image)
+            if arr.ndim != 3 or arr.shape[2] != 3:
+                self.num_failed_downloads += 1
+                return None  # Skip malformed arrays
+
+        except Exception:
+            # Skip any images that fail conversion/validation (corrupted, invalid format, etc.)
+            self.num_failed_downloads += 1
+            return None
+
         return {
             "image": image,
             "text": self.question_template,
@@ -184,11 +226,11 @@ def load_datacomp(
     question_template: str = "Describe this image in detail.",
     hf_token: Optional[str] = None,
 ) -> DataCompDataset:
-    """Load DataComp-1B dataset for TheWorld training.
+    """Load DataComp-Small dataset for TheWorld training.
 
     Args:
         split: Dataset split ("train" is the only available split)
-        num_samples: Limit to N samples (None = use all 1.4B)
+        num_samples: Limit to N samples (None = use all 12.8M)
         streaming: Use streaming mode (recommended for large datasets)
         question_template: Question to ask about each image
         hf_token: HuggingFace API token (optional, dataset is public)
@@ -206,12 +248,12 @@ def load_datacomp(
     from datasets import load_dataset as hf_load_dataset
 
     # Load HuggingFace dataset
-    print(f"Loading DataComp-1B dataset (split={split}, streaming={streaming})...")
+    print(f"Loading DataComp-Small dataset (split={split}, streaming={streaming})...")
 
     if streaming:
         # Streaming mode: efficient for large datasets
         hf_dataset = hf_load_dataset(
-            "mlfoundations/datacomp_1b",
+            "mlfoundations/datacomp_small",
             split=split,
             streaming=True,
             token=hf_token,
@@ -231,16 +273,16 @@ def load_datacomp(
         if num_samples:
             # Use split slicing to load only subset
             hf_dataset = hf_load_dataset(
-                "mlfoundations/datacomp_1b",
+                "mlfoundations/datacomp_small",
                 split=f"{split}[:{num_samples}]",
                 token=hf_token,
             )
             print(f"  Loaded {len(hf_dataset)} samples")  # type: ignore[arg-type]
         else:
-            # Load full dataset (1.4B samples - requires a lot of memory!)
-            print("  ⚠️  Loading full 1.4B dataset without streaming - this may take a long time!")
+            # Load full dataset (12.8M samples - requires a lot of memory!)
+            print("  ⚠️  Loading full 12.8M dataset without streaming - this may take a long time!")
             hf_dataset = hf_load_dataset(
-                "mlfoundations/datacomp_1b",
+                "mlfoundations/datacomp_small",
                 split=split,
                 token=hf_token,
             )

@@ -27,8 +27,13 @@ The model fuses three components:
 Input Image (PIL/tensor)
     ↓
 [Gemma Vision Processing]
-    → Gemma processor applies chat template with <start_of_image> token
-    → SigLIP encoder produces ~264 vision tokens
+    → Gemma processor.apply_chat_template() returns:
+      - input_ids with image placeholders (token ID 262144)
+      - pixel_values (preprocessed for SigLIP)
+    → Get text embeddings from input_ids
+    → SigLIP encoder processes pixel_values → vision features (~256 tokens)
+    → Replace placeholders in embeddings with vision features
+    → Result: multimodal embeddings (text + vision)
     ↓
 [Cosmos World Processing]
     → If num_world_steps=0: VAE encode current frame only
@@ -38,9 +43,16 @@ Input Image (PIL/tensor)
     → Project to Gemma dimension: 16→2304
     → Produces (T × H × W) world tokens where T=frames, H×W=28×28
     ↓
-[Token Combination]
-    → Concatenate: [Gemma vision tokens | Cosmos world tokens]
-    → Feed combined sequence to Gemma language model
+[Token Combination via EmbeddingFusion]
+    → Locate <start_of_world> and <end_of_world> special tokens
+    → Insert world embeddings between brackets
+    → Final sequence: [BOS, SOW, WORLD×784, EOW, ..., IMG×256, ...]
+    → World-first ordering ensures temporal context precedes static vision
+    ↓
+[Language Model Processing]
+    → Feed combined embeddings to Gemma language model
+    → Causal language modeling loss on text tokens only
+    → Vision and world tokens masked with -100 (ignored in loss)
     ↓
 Output: Language model logits for next token prediction
 ```
@@ -118,7 +130,7 @@ make smoke-test
 ```
 
 The smoke test:
-- Trains on just 2 samples from DataComp-1B
+- Trains on just 2 samples from DataComp-Small
 - Tests the entire pipeline (model loading, training, checkpointing, Hub upload)
 - Completes in ~3 minutes
 - Uploads to a private Hub repo for verification
@@ -208,10 +220,20 @@ messages = [
         ]
     }
 ]
-inputs = processor.apply_chat_template(messages, tokenize=True, return_tensors="pt")
+inputs = processor.apply_chat_template(
+    messages,
+    tokenize=True,
+    return_dict=True,  # Returns dict with input_ids, attention_mask, pixel_values
+    return_tensors="pt"
+)
 ```
 
-This handles `<start_of_image>` and `<end_of_image>` token insertion automatically.
+**Key implementation details:**
+- `apply_chat_template()` handles `<start_of_image>` and `<end_of_image>` tokens automatically
+- Returns `pixel_values` already preprocessed for SigLIP (no manual preprocessing needed)
+- Vision processing happens inline in `forward()`: 6 lines that call `embed_tokens()`, `get_image_features()`, and `get_placeholder_mask()`
+- SigLIP vision tower is loaded once on initialization and reused
+- No separate `GemmaVisionEncoder` class - logic is inlined directly in TheWorld.forward()
 
 ### Cosmos Latent Space
 
@@ -251,13 +273,14 @@ See `docs/autoregressive_world_rollout.md` for architecture details.
 
 During training, labels must align with the combined embedding sequence:
 ```python
-combined_embeds = [Gemma vision tokens | Cosmos world tokens]
+combined_embeds = [BOS, SOW, WORLD×784, EOW, ..., IMG×256, ...]
 ```
 
 The forward pass automatically handles this by:
-1. Using Gemma's `input_ids` for vision+text tokens
-2. Padding world tokens with `-100` (ignore index)
-3. Loss computed only on text tokens (vision and world tokens ignored)
+1. Using Gemma's `input_ids` for text tokens (includes SOW/EOW special tokens)
+2. World tokens are inserted dynamically via `EmbeddingFusion` module
+3. Loss computed only on text tokens (vision and world tokens masked with -100)
+4. World-first ordering: world embeddings appear before vision tokens in sequence
 
 ### Device Management
 
@@ -286,13 +309,18 @@ Remove `local_files_only=True` on first run to download models.
 
 ```
 theworld/
-├── theworld/                           # Core package
+├── python/theworld/                    # Core package
 │   ├── __init__.py                    # Package exports
-│   ├── modeling.py                    # TheWorld model class
-│   ├── generation.py                  # Text generation utilities
 │   ├── config.py                      # TrainingConfig dataclass
+│   ├── constants.py                   # Special token IDs (BOS, IMAGE_SOFT_TOKEN, etc.)
 │   ├── data.py                        # Dataset + collator for HF Trainer
 │   ├── hub_utils.py                   # HuggingFace Hub utilities (model cards)
+│   ├── modeling/                      # Model architecture modules
+│   │   ├── __init__.py
+│   │   ├── theworld.py                # Main TheWorld model class
+│   │   ├── cosmos_encoder.py          # CosmosEncoder (VAE → projection)
+│   │   ├── fusion.py                  # EmbeddingFusion (insert world tokens)
+│   │   └── outputs.py                 # Output dataclasses
 │   └── datasets/                      # Dataset loaders
 │       ├── __init__.py
 │       └── datacomp.py                # DataComp-1B dataset loader
@@ -308,6 +336,12 @@ theworld/
 │   ├── datacomp_test.json            # DataComp quick test (100 samples)
 │   ├── datacomp_production.json      # DataComp production (streaming)
 │   └── eval_blink.json               # BLINK benchmark evaluation config
+├── tests/                              # Test suite
+│   ├── test_cosmos_encoder.py        # CosmosEncoder integration tests
+│   └── validation/                   # Ad-hoc validation scripts (NOT run by pytest)
+│       ├── check_model_structure.py  # Model architecture verification
+│       ├── test_gradient_flow.py     # Gradient flow debugging
+│       └── ...                       # Other validation/debugging scripts
 ├── docs/                               # Documentation
 │   ├── world_model_latent_space.md   # Cosmos latent extraction details
 │   ├── autoregressive_world_rollout.md  # Temporal prediction architecture
@@ -322,6 +356,22 @@ theworld/
 ```
 
 ## Common Development Patterns
+
+### Creating Test and Validation Scripts
+
+**Where to put test scripts:**
+- **Formal tests**: Add to `tests/` directory (run by pytest)
+  - Example: `tests/test_cosmos_encoder.py`
+  - Use pytest fixtures and assertions
+  - Should be part of CI/CD pipeline
+
+- **Validation/debugging scripts**: Add to `tests/validation/` directory
+  - Example: `tests/validation/test_gradient_flow.py`
+  - Ad-hoc scripts for debugging, verification, experiments
+  - NOT run by pytest (use `if __name__ == "__main__"` pattern)
+  - Quick throwaway scripts to validate behavior
+
+**Important**: NEVER create test/validation scripts in the repository root. Always use the appropriate tests subdirectory.
 
 ### Adding New Training Configurations
 
@@ -581,6 +631,30 @@ For full model training beyond single GPU capacity, see `docs/deepspeed_zero_ana
 
 ## Architecture Notes
 
+### Simplified Vision Processing (January 2025 Refactor)
+
+The architecture was recently simplified to eliminate redundant code:
+
+**Before:** Separate `GemmaVisionEncoder` class (~97 lines) that wrapped vision processing
+**After:** Vision processing inlined (6 lines) directly in `TheWorld.forward()`:
+```python
+# Get text embeddings
+inputs_embeds = self.gemma.model.language_model.embed_tokens(input_ids)
+
+# Process vision through SigLIP
+image_features = self.gemma.model.get_image_features(pixel_values)
+
+# Replace image placeholders with vision features
+special_image_mask = self.gemma.model.get_placeholder_mask(input_ids, inputs_embeds, image_features)
+multimodal_embeds = inputs_embeds.masked_scatter(special_image_mask, image_features)
+```
+
+**Benefits:**
+- Simpler code (removed entire class)
+- Reuses already-loaded SigLIP vision tower from `gemma.model.vision_tower`
+- No double-loading of vision models
+- `pixel_values` comes from `apply_chat_template()` - no manual preprocessing needed
+
 ### Why This Fusion Works
 
 1. **Gemma provides**: Static visual understanding (objects, scenes, text in images)
@@ -608,6 +682,17 @@ See [Multi-Stage Training Guide](docs/multi_stage_training.md) for detailed work
 - Single-step mode (num_world_steps=0) is much faster than multi-step
 - Memory usage scales with num_world_steps (each frame adds ~784 tokens)
 - Currently only supports single image input (no video sequences yet)
+
+### Known Issues
+
+**RetinaFace Gradient Bug** (Fixed with workaround):
+The `retinaface` library (a dependency of `cosmos_guardrail`) globally disables PyTorch gradients at import time (`torch.set_grad_enabled(False)` in `retinaface/inference_framework.py:4`). This would break all training, but `TheWorld.__init__` automatically re-enables gradients as a workaround. If you import Cosmos components directly, you must manually call `torch.set_grad_enabled(True)` after import. See [docs/retinaface_gradient_bug.md](docs/retinaface_gradient_bug.md) for detailed explanation.
+
+**Memory Requirements** (80GB+ GPU):
+The full model (Gemma 3 4B + Cosmos 2B + projection) requires ~47GB at initialization and can exceed 80GB during training due to activation memory. For GPUs with <80GB:
+- Use gradient checkpointing (`use_gradient_checkpointing: true`) to reduce activation memory
+- Consider smaller Gemma model variants (2B instead of 4B)
+- Note: `load_full_cosmos_pipeline: false` doesn't work - Cosmos VAE uses custom architecture and must be loaded via full pipeline
 
 ## Loss Function and Evaluation
 

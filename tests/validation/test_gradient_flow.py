@@ -14,8 +14,8 @@ from theworld import TheWorld, create_theworld_collator
 
 # Create model
 print("Loading model...")
-model = TheWorld("google/gemma-3-4b-it")
-model.eval()  # Disable dropout for deterministic test
+model = TheWorld("google/gemma-3-4b-it", load_full_cosmos_pipeline=True)
+model.train()  # IMPORTANT: Must be in training mode for gradient tracking!
 
 # Get initial projection weights
 initial_weights = model.cosmos_encoder.world_projection.weight.clone()
