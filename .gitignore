@@ -5,6 +5,10 @@ __pycache__/
 
 # vscode
 .vscode/
+pyrightconfig.json
+
+# datasets
+/python/theworld/datasets/vsr
 
 # C extensions
 *.so
