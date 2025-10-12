@@ -252,46 +252,56 @@ python scripts/eval_spatial_rgpt.py \
 
 ## How Gemma-as-Judge Works
 
-Instead of using GPT-4 to evaluate answers (expensive, requires API), we use **Gemma to judge its own outputs**:
+We provide multiple judge modes for evaluation. The **official judge** mode replicates the SpatialRGPT-Bench paper's evaluation methodology using Gemma instead of GPT-4.
 
-**Step 1: Generate Answer**
+### Judge Modes
+
+**1. Official Judge (`--official-judge`)**
+Replicates the official SpatialRGPT-Bench evaluation (Tables 12 & 13 from paper):
+
+**Qualitative Questions:**
+- Judge outputs: 0 (incorrect) or 1 (correct)
+- Binary correctness assessment
+
+**Quantitative Questions:**
+- Judge converts both answers to meters
+- Calculates relative error: `|pred - gt| / gt`
+- Reports success rates at multiple thresholds:
+  - ±10% (stricter)
+  - ±25% (official metric from paper)
+  - ±50% (more lenient)
+- Calculates absolute relative error (average)
+
+**Example Flow:**
 ```
-Question: "Is Region [0] behind Region [1]?"
-Model Response: "Yes, Region [0] is behind Region [1]."
+Question: "What is the height of Region [0]?"
+Ground Truth: "6.91 feet"
+Prediction: "2.1 meters"
+
+Judge converts both to meters:
+- Ground truth: 6.91 ft = 2.106 m
+- Prediction: 2.1 m
+
+Relative error = |2.1 - 2.106| / 2.106 = 0.0028 (0.28%)
+→ Within ±10%, ±25%, ±50% → Correct at all thresholds
 ```
 
-**Step 2: Create Judge Prompt**
-```
-You are evaluating spatial reasoning answers. Compare the prediction to the ground truth.
+**2. Lenient Judge (`--lenient-judge`)**
+Semantic equivalence check (Yes/No response)
 
-Question: Is Region [0] behind Region [1]?
+**3. Strict Judge (default)**
+Prediction must contain ground truth information
 
-Ground Truth Answer: No.
+### Advantages of Official Judge
+- Matches paper's evaluation methodology
+- Multi-threshold insights (see performance across tolerances)
+- Tracks unparseable responses
+- Quantifies error magnitude
 
-Predicted Answer: Yes, Region [0] is behind Region [1].
-
-Does the prediction correctly answer the question based on the ground truth?
-Consider semantic equivalence - the prediction doesn't need exact wording.
-
-Respond with ONLY "Yes" or "No" (one word).
-```
-
-**Step 3: Get Judgment**
-```
-Judge Response: "No"
-→ Score: 0.0 (incorrect)
-```
-
-**Advantages:**
-- No API costs
-- Fast (uses already-loaded model)
-- Good baseline for quick evaluation
-- Self-contained (no external services)
-
-**Limitations:**
-- Not as accurate as GPT-4 evaluation
-- Model may be lenient judging its own outputs
-- Best used for baseline comparisons
+### Limitations
+- Gemma less accurate than GPT-4 at unit conversion
+- May produce formatting artifacts
+- Use GPT-4 judge for publication-quality results (see Standalone Judging below)
 
 ## Understanding the Results
 
@@ -299,6 +309,7 @@ Judge Response: "No"
 
 Each line in the output JSONL contains:
 
+**Qualitative Question:**
 ```json
 {
   "id": "qualitative_3TrgWgKqnf",
@@ -309,17 +320,80 @@ Each line in the output JSONL contains:
   "qa_category": "small_predicate",
   "score": 1.0,
   "correct": true,
-  "judge_response": "\nYes\n"
+  "judge_response": "1"
 }
 ```
 
+**Quantitative Question (with official judge):**
+```json
+{
+  "id": "quantitative_L1Nt6oLYo9",
+  "question": "Determine the vertical dimensions of Region [0].",
+  "ground_truth": "Region [0] is 30.05 inches in height.",
+  "prediction": "The height is approximately 0.75 meters",
+  "qa_type": "quantitative",
+  "qa_category": "height_data",
+  "score": 1.0,
+  "correct": true,
+  "judge_response": "[0.763, 0.75]",
+  "relative_error": 0.017,
+  "gt_meters": 0.763,
+  "pred_meters": 0.75
+}
+```
+
+**Fields:**
+- `relative_error`: Only for quantitative with official judge. `|pred - gt| / gt`
+- `gt_meters`, `pred_meters`: Converted values in meters
+- `correct`: True if within ±25% threshold (official metric)
+
 ### Metrics Breakdown
 
-The evaluation prints metrics broken down by:
+**Console Output (with official judge):**
+```
+============================================================
+EVALUATION RESULTS
+============================================================
+
+Overall:
+  Total: 1406
+  Correct: 748
+  Accuracy: 0.5320 (53.20%)
+
+By Question Type:
+  qualitative: 0.6543 (65.43%)
+  quantitative: 0.4121 (41.21%)
+
+Quantitative Metrics (Multi-Threshold):
+  Total quantitative: 703
+  Success rates:
+    ±10%: 0.3215 (32.15%)
+    ±25%: 0.4121 (41.21%) ← official
+    ±50%: 0.5873 (58.73%)
+  Absolute Relative Error: 0.33
+  Unparseable responses: 5 (0.7%)
+
+By Category:
+  small_predicate: 0.8542 (85.42%)
+  left_choice: 0.7821 (78.21%)
+  behind_predicate: 0.3254 (32.54%)
+  ...
+============================================================
+```
+
+**Breakdown:**
 
 **Question Type:**
-- `qualitative`: Yes/No or descriptive questions
-- `quantitative`: Numeric measurements (height, width, distance)
+- `qualitative`: Yes/No or descriptive questions → Binary accuracy
+- `quantitative`: Numeric measurements → Multi-threshold success rates
+
+**Quantitative Metrics:**
+- **Success rates**: Percentage within each tolerance threshold
+  - ±10%: Stricter threshold for high precision
+  - ±25%: Official metric from SpatialRGPT-Bench paper
+  - ±50%: More lenient threshold
+- **Absolute Relative Error**: Average error magnitude (lower is better)
+- **Unparseable**: Responses judge couldn't convert to numbers
 
 **Category:**
 - `small_predicate`: Size comparisons
@@ -328,16 +402,105 @@ The evaluation prints metrics broken down by:
 - `left_choice`, `right_choice`: Horizontal positioning
 - `height_data`, `width_data`: Measurement questions
 
-### Interpreting Accuracy
+### Interpreting Results
 
 **Typical baseline results:**
 - **Overall**: 50-70% (varies by model)
+- **Qualitative**: 60-75%
+- **Quantitative @ ±25%**: 35-45%
 - **Spatial choices** (left/right): 80-100% (easier)
 - **Size comparisons**: 60-80%
 - **Depth reasoning**: 20-50% (harder)
 - **Quantitative measurements**: 40-60%
 
 Low accuracy on certain categories (e.g., `behind_predicate`) indicates areas where world model understanding could help.
+
+## Standalone Judging
+
+After running evaluation with `--skip-judging`, you can re-judge predictions using different judges without re-running inference. This is useful for comparing judge accuracy or using more expensive judges like GPT-4.
+
+### Available Judges
+
+**1. Gemma (Free, Fast, Less Accurate)**
+- Uses the same Gemma model for judging
+- No additional costs
+- Good for quick iterations
+- May have unit conversion errors on quantitative questions
+
+**2. GPT-4 (Paid, Accurate, API-based)**
+- Uses OpenAI GPT-4 API
+- Requires API key and credits
+- Most accurate for unit conversions
+- Official SpatialRGPT-Bench uses GPT-4
+
+**3. GPT-OSS (Free, Accurate, Large Model)**
+- Uses OpenAI's open-source GPT model (120B params)
+- No API costs
+- More accurate than Gemma for unit conversions
+- Requires large GPU (~120-240GB VRAM)
+
+### Judge with Gemma
+
+```bash
+# First, run evaluation without judging
+python scripts/eval_spatial_rgpt.py \
+    --data-path a8cheng/SpatialRGPT-Bench \
+    --image-folder "" \
+    --model google/gemma-3-4b-it \
+    --output outputs/predictions.jsonl \
+    --skip-judging
+
+# Then judge with Gemma
+python scripts/judge_predictions.py \
+    --predictions outputs/predictions.jsonl \
+    --judge gemma \
+    --model google/gemma-3-4b-it \
+    --output outputs/results_judged_gemma.jsonl
+```
+
+### Judge with GPT-4
+
+```bash
+# Set API key
+export OPENAI_API_KEY=sk-...
+
+# Judge with GPT-4
+python scripts/judge_predictions.py \
+    --predictions outputs/predictions.jsonl \
+    --judge gpt4 \
+    --gpt-model gpt-4-turbo \
+    --output outputs/results_judged_gpt4.jsonl
+```
+
+### Judge with GPT-OSS
+
+```bash
+# Judge with GPT-OSS (requires large GPU)
+python scripts/judge_predictions.py \
+    --predictions outputs/predictions.jsonl \
+    --judge gpt-oss \
+    --gpt-oss-model openai/gpt-oss-120b \
+    --output outputs/results_judged_gptoss.jsonl
+```
+
+**GPT-OSS Options:**
+- `--gpt-oss-model`: HuggingFace model ID (default: openai/gpt-oss-120b)
+- `--gpt-oss-device-map`: Device placement strategy (default: auto)
+- `--gpt-oss-dtype`: Torch dtype (default: auto)
+
+**Memory Requirements:**
+- Full precision (fp32): ~480GB VRAM
+- Half precision (fp16): ~240GB VRAM
+- 8-bit quantization (int8): ~120GB VRAM
+
+For 8-bit quantization:
+```bash
+python scripts/judge_predictions.py \
+    --predictions outputs/predictions.jsonl \
+    --judge gpt-oss \
+    --gpt-oss-dtype int8 \
+    --output outputs/results_judged_gptoss.jsonl
+```
 
 ## Advanced Usage
 

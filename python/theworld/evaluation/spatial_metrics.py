@@ -203,7 +203,7 @@ def evaluate_with_gemma(
     question: Union[str, list],
     prediction: Union[str, list],
     ground_truth: Union[str, list],
-    max_new_tokens: int = 10,
+    max_new_tokens: int = 50,
     temperature: float = 0.0,
     judge_mode: str = "strict",
     qa_type: Union[str, list, None] = None,
@@ -335,25 +335,39 @@ def evaluate_with_gemma(
                 # Parse two floats and compare
                 gt_meters, pred_meters = parse_official_quantitative_response(judge_response)
                 if gt_meters is not None and pred_meters is not None:
-                    # Consider correct if within 20% or 0.5 meters (whichever is larger)
-                    threshold = max(0.5, 0.2 * gt_meters)
-                    correct = abs(gt_meters - pred_meters) <= threshold
+                    # Calculate relative error: |pred - gt| / gt
+                    if gt_meters > 0:
+                        relative_error = abs(pred_meters - gt_meters) / gt_meters
+                    else:
+                        relative_error = float('inf') if pred_meters != 0 else 0.0
+
+                    # Official threshold: ±25% (from SpatialRGPT-Bench paper)
+                    correct = relative_error <= 0.25
                     score = 1.0 if correct else 0.0
                 else:
                     # Failed to parse - mark as incorrect
                     correct = False
                     score = 0.0
+                    relative_error = None
         else:
             # Strict/lenient modes: parse Yes/No
             correct = parse_yes_no_response(judge_response)
             score = 1.0 if correct else 0.0
 
-        results.append({
+        result = {
             "score": score,
             "correct": correct,
             "judge_response": judge_response,
             "judge_prompt": judge_prompt,
-        })
+        }
+
+        # Add relative_error for quantitative questions in official mode
+        if judge_mode == "official" and qtype == "quantitative":
+            result["relative_error"] = relative_error
+            result["gt_meters"] = gt_meters
+            result["pred_meters"] = pred_meters
+
+        results.append(result)
 
     # Return single dict or list based on input
     return results[0] if not is_batch else results
@@ -362,8 +376,15 @@ def evaluate_with_gemma(
 def calculate_spatial_accuracy(results: list[Dict[str, Any]]) -> Dict[str, Any]:
     """Calculate accuracy metrics from spatial evaluation results.
 
+    For quantitative questions (when relative_error is available), calculates:
+    - Success rates at multiple thresholds (±10%, ±25%, ±50%)
+    - Absolute relative error (average)
+    - Number of unparseable responses
+
+    For qualitative questions, calculates traditional accuracy.
+
     Args:
-        results: List of evaluation results (each with 'score' field)
+        results: List of evaluation results (each with 'score' field, and optionally 'relative_error')
 
     Returns:
         Dictionary with metrics:
@@ -372,12 +393,13 @@ def calculate_spatial_accuracy(results: list[Dict[str, Any]]) -> Dict[str, Any]:
             - accuracy: Overall accuracy (0.0 to 1.0)
             - by_type: Accuracy broken down by question type (if available)
             - by_category: Accuracy broken down by category (if available)
+            - quantitative_metrics: Dict with multi-threshold metrics (if quantitative results exist)
 
     Example:
         >>> results = [
         ...     {"score": 1.0, "qa_type": "qualitative"},
         ...     {"score": 0.0, "qa_type": "qualitative"},
-        ...     {"score": 1.0, "qa_type": "quantitative"},
+        ...     {"score": 1.0, "qa_type": "quantitative", "relative_error": 0.15},
         ... ]
         >>> metrics = calculate_spatial_accuracy(results)
         >>> metrics['accuracy']
@@ -390,11 +412,41 @@ def calculate_spatial_accuracy(results: list[Dict[str, Any]]) -> Dict[str, Any]:
             "accuracy": 0.0,
             "by_type": {},
             "by_category": {},
+            "quantitative_metrics": {},
         }
 
     total = len(results)
     correct = sum(1 for r in results if r.get("score", 0.0) == 1.0)
     accuracy = correct / total
+
+    # Separate quantitative and qualitative results
+    quant_results = [r for r in results if r.get("qa_type") == "quantitative"]
+    qual_results = [r for r in results if r.get("qa_type") == "qualitative"]
+
+    # Calculate quantitative-specific metrics
+    quantitative_metrics = {}
+    if quant_results:
+        # Extract relative errors (excluding None values for unparseable responses)
+        relative_errors = [r.get("relative_error") for r in quant_results if r.get("relative_error") is not None]
+        unparseable = sum(1 for r in quant_results if r.get("relative_error") is None)
+
+        # Calculate success rates at different thresholds
+        thresholds = [0.10, 0.25, 0.50]  # ±10%, ±25%, ±50%
+        success_rates = {}
+        for threshold in thresholds:
+            within_threshold = sum(1 for err in relative_errors if err <= threshold)
+            success_rates[f"±{int(threshold*100)}%"] = within_threshold / len(quant_results) if len(quant_results) > 0 else 0.0
+
+        # Calculate absolute relative error (average of successful parses)
+        abs_relative_error = sum(relative_errors) / len(relative_errors) if len(relative_errors) > 0 else None
+
+        quantitative_metrics = {
+            "total": len(quant_results),
+            "success_rates": success_rates,
+            "absolute_relative_error": abs_relative_error,
+            "unparseable": unparseable,
+            "unparseable_rate": unparseable / len(quant_results) if len(quant_results) > 0 else 0.0,
+        }
 
     # Calculate accuracy by question type
     by_type = {}
@@ -432,4 +484,5 @@ def calculate_spatial_accuracy(results: list[Dict[str, Any]]) -> Dict[str, Any]:
         "accuracy": accuracy,
         "by_type": by_type,
         "by_category": by_category,
+        "quantitative_metrics": quantitative_metrics,
     }

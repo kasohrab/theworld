@@ -126,6 +126,12 @@ def parse_args():
         default=False,
         help="Use official SpatialRGPT-Bench judge prompts (GPT-4 style). Overrides --lenient-judge.",
     )
+    p.add_argument(
+        "--skip-judging",
+        action="store_true",
+        default=False,
+        help="Skip judging step - only generate and save predictions. Use judge_predictions.py to judge later.",
+    )
     return p.parse_args()
 
 
@@ -144,6 +150,7 @@ def run_eval(
     batch_size: int = 1,
     save_visualizations: bool = False,
     judge_mode: str = "strict",
+    skip_judging: bool = False,
 ) -> None:
     """Run evaluation on SpatialRGPT-Bench.
 
@@ -162,6 +169,7 @@ def run_eval(
         batch_size: Batch size for processing (default: 1)
         save_visualizations: Save bbox images and responses (default: False)
         judge_mode: Judging mode - "strict", "lenient", or "official" (default: "strict")
+        skip_judging: Skip judging step - only save predictions (default: False)
     """
     # Load dataset
     print(f"Loading dataset from: {data_path}")
@@ -295,37 +303,47 @@ def run_eval(
             batch_qa_types = [ex["qa_type"] for ex in batch_examples]
 
             # Evaluate with Gemma-as-judge (batched if batch_size > 1)
-            try:
-                if batch_size == 1:
-                    # Single sample
-                    batch_eval_results = [
-                        evaluate_with_gemma(
+            if not skip_judging:
+                try:
+                    if batch_size == 1:
+                        # Single sample
+                        batch_eval_results = [
+                            evaluate_with_gemma(
+                                model,
+                                question=batch_questions[0],
+                                prediction=batch_predictions[0],
+                                ground_truth=batch_ground_truths[0],
+                                judge_mode=judge_mode,
+                                qa_type=batch_qa_types[0],
+                            )
+                        ]
+                    else:
+                        # Batched
+                        batch_eval_results = evaluate_with_gemma(
                             model,
-                            question=batch_questions[0],
-                            prediction=batch_predictions[0],
-                            ground_truth=batch_ground_truths[0],
+                            question=batch_questions,
+                            prediction=batch_predictions,
+                            ground_truth=batch_ground_truths,
                             judge_mode=judge_mode,
-                            qa_type=batch_qa_types[0],
+                            qa_type=batch_qa_types,
                         )
-                    ]
-                else:
-                    # Batched
-                    batch_eval_results = evaluate_with_gemma(
-                        model,
-                        question=batch_questions,
-                        prediction=batch_predictions,
-                        ground_truth=batch_ground_truths,
-                        judge_mode=judge_mode,
-                        qa_type=batch_qa_types,
-                    )
-            except Exception as e:
-                # Error during evaluation
+                except Exception as e:
+                    # Error during evaluation
+                    batch_eval_results = [
+                        {
+                            "score": 0.0,
+                            "correct": False,
+                            "judge_response": f"<ERROR: {e}>",
+                            "judge_prompt": "",
+                        }
+                    ] * len(batch_examples)
+            else:
+                # Skip judging - create placeholder results
                 batch_eval_results = [
                     {
-                        "score": 0.0,
-                        "correct": False,
-                        "judge_response": f"<ERROR: {e}>",
-                        "judge_prompt": "",
+                        "score": None,
+                        "correct": None,
+                        "judge_response": None,
                     }
                 ] * len(batch_examples)
 
@@ -342,10 +360,13 @@ def run_eval(
                     "prediction": prediction,
                     "qa_type": ex["qa_type"],
                     "qa_category": ex["qa_category"],
-                    "score": eval_result["score"],
-                    "correct": eval_result["correct"],
-                    "judge_response": eval_result["judge_response"],
                 }
+
+                # Add judge results if not skipping judging
+                if not skip_judging:
+                    result["score"] = eval_result["score"]
+                    result["correct"] = eval_result["correct"]
+                    result["judge_response"] = eval_result["judge_response"]
                 results.append(result)
                 fout.write(json.dumps(result) + "\n")
 
@@ -389,72 +410,107 @@ def run_eval(
 
     print(f"\n✓ Saved results to {output_path}")
 
-    # Calculate and print metrics
-    print("\n" + "=" * 60)
-    print("EVALUATION RESULTS")
-    print("=" * 60)
+    # Calculate and print metrics (skip if judging was skipped)
+    if not skip_judging:
+        print("\n" + "=" * 60)
+        print("EVALUATION RESULTS")
+        print("=" * 60)
 
-    metrics = calculate_spatial_accuracy(results)
-    print(f"\nOverall:")
-    print(f"  Total: {metrics['total']}")
-    print(f"  Correct: {metrics['correct']}")
-    print(f"  Accuracy: {metrics['accuracy']:.4f} ({metrics['accuracy']*100:.2f}%)")
-
-    if metrics["by_type"]:
-        print(f"\nBy Question Type:")
-        for qa_type, acc in metrics["by_type"].items():
-            print(f"  {qa_type}: {acc:.4f} ({acc*100:.2f}%)")
-
-    if metrics["by_category"]:
-        print(f"\nBy Category:")
-        for qa_category, acc in metrics["by_category"].items():
-            print(f"  {qa_category}: {acc:.4f} ({acc*100:.2f}%)")
-
-    print("=" * 60)
-
-    # Save summary to file
-    summary_path = output_path.replace(".jsonl", "_summary.txt")
-    with open(summary_path, "w", encoding="utf-8") as f:
-        f.write("=" * 60 + "\n")
-        f.write("SPATIAL RGPT-BENCH EVALUATION RESULTS\n")
-        f.write("=" * 60 + "\n")
-        f.write(f"Model: {model_name}\n")
-        f.write(f"Batch Size: {batch_size}\n")
-        f.write(f"Load Cosmos: {load_cosmos}\n")
-        if load_cosmos:
-            f.write(f"World Steps: {num_world_steps}\n")
-        f.write(f"Results File: {output_path}\n")
-        f.write("\n")
-
-        f.write("=" * 60 + "\n")
-        f.write("OVERALL ACCURACY\n")
-        f.write("=" * 60 + "\n")
-        f.write(f"Total Samples: {metrics['total']}\n")
-        f.write(f"Correct: {metrics['correct']}\n")
-        f.write(f"Accuracy: {metrics['accuracy']:.4f} ({metrics['accuracy']*100:.2f}%)\n")
-        f.write("\n")
+        metrics = calculate_spatial_accuracy(results)
+        print(f"\nOverall:")
+        print(f"  Total: {metrics['total']}")
+        print(f"  Correct: {metrics['correct']}")
+        print(f"  Accuracy: {metrics['accuracy']:.4f} ({metrics['accuracy']*100:.2f}%)")
 
         if metrics["by_type"]:
-            f.write("=" * 60 + "\n")
-            f.write("BY QUESTION TYPE\n")
-            f.write("=" * 60 + "\n")
+            print(f"\nBy Question Type:")
             for qa_type, acc in metrics["by_type"].items():
-                f.write(f"{qa_type}: {acc:.4f} ({acc*100:.2f}%)\n")
-            f.write("\n")
+                print(f"  {qa_type}: {acc:.4f} ({acc*100:.2f}%)")
+
+        # Display quantitative-specific metrics
+        if metrics.get("quantitative_metrics"):
+            qm = metrics["quantitative_metrics"]
+            print(f"\nQuantitative Metrics (Multi-Threshold):")
+            print(f"  Total quantitative: {qm['total']}")
+            if qm.get("success_rates"):
+                print(f"  Success rates:")
+                for threshold, rate in qm["success_rates"].items():
+                    marker = " ← official" if threshold == "±25%" else ""
+                    print(f"    {threshold}: {rate:.4f} ({rate*100:.2f}%){marker}")
+            if qm.get("absolute_relative_error") is not None:
+                print(f"  Absolute Relative Error: {qm['absolute_relative_error']:.4f}")
+            if qm.get("unparseable") > 0:
+                print(f"  Unparseable responses: {qm['unparseable']} ({qm['unparseable_rate']*100:.1f}%)")
 
         if metrics["by_category"]:
+            print(f"\nBy Category:")
+            for qa_category, acc in metrics["by_category"].items():
+                print(f"  {qa_category}: {acc:.4f} ({acc*100:.2f}%)")
+
+        print("=" * 60)
+
+    # Save summary to file (skip if judging was skipped)
+    if not skip_judging:
+        summary_path = output_path.replace(".jsonl", "_summary.txt")
+        with open(summary_path, "w", encoding="utf-8") as f:
             f.write("=" * 60 + "\n")
-            f.write("BY CATEGORY (DETAILED BREAKDOWN)\n")
+            f.write("SPATIAL RGPT-BENCH EVALUATION RESULTS\n")
             f.write("=" * 60 + "\n")
-            # Sort by accuracy descending
-            sorted_categories = sorted(metrics["by_category"].items(), key=lambda x: x[1], reverse=True)
-            for qa_category, acc in sorted_categories:
-                f.write(f"{qa_category}: {acc:.4f} ({acc*100:.2f}%)\n")
+            f.write(f"Model: {model_name}\n")
+            f.write(f"Batch Size: {batch_size}\n")
+            f.write(f"Load Cosmos: {load_cosmos}\n")
+            if load_cosmos:
+                f.write(f"World Steps: {num_world_steps}\n")
+            f.write(f"Results File: {output_path}\n")
             f.write("\n")
 
-        f.write("=" * 60 + "\n")
+            f.write("=" * 60 + "\n")
+            f.write("OVERALL ACCURACY\n")
+            f.write("=" * 60 + "\n")
+            f.write(f"Total Samples: {metrics['total']}\n")
+            f.write(f"Correct: {metrics['correct']}\n")
+            f.write(f"Accuracy: {metrics['accuracy']:.4f} ({metrics['accuracy']*100:.2f}%)\n")
+            f.write("\n")
 
-    print(f"✓ Saved summary to {summary_path}")
+            if metrics["by_type"]:
+                f.write("=" * 60 + "\n")
+                f.write("BY QUESTION TYPE\n")
+                f.write("=" * 60 + "\n")
+                for qa_type, acc in metrics["by_type"].items():
+                    f.write(f"{qa_type}: {acc:.4f} ({acc*100:.2f}%)\n")
+                f.write("\n")
+
+            # Write quantitative-specific metrics
+            if metrics.get("quantitative_metrics"):
+                qm = metrics["quantitative_metrics"]
+                f.write("=" * 60 + "\n")
+                f.write("QUANTITATIVE METRICS (MULTI-THRESHOLD)\n")
+                f.write("=" * 60 + "\n")
+                f.write(f"Total Quantitative: {qm['total']}\n")
+                if qm.get("success_rates"):
+                    f.write("\nSuccess Rates:\n")
+                    for threshold, rate in qm["success_rates"].items():
+                        marker = " ← official metric" if threshold == "±25%" else ""
+                        f.write(f"  {threshold}: {rate:.4f} ({rate*100:.2f}%){marker}\n")
+                if qm.get("absolute_relative_error") is not None:
+                    f.write(f"\nAbsolute Relative Error: {qm['absolute_relative_error']:.4f}\n")
+                if qm.get("unparseable") > 0:
+                    f.write(f"\nUnparseable Responses: {qm['unparseable']} ({qm['unparseable_rate']*100:.1f}%)\n")
+                f.write("\n")
+
+            if metrics["by_category"]:
+                f.write("=" * 60 + "\n")
+                f.write("BY CATEGORY (DETAILED BREAKDOWN)\n")
+                f.write("=" * 60 + "\n")
+                # Sort by accuracy descending
+                sorted_categories = sorted(metrics["by_category"].items(), key=lambda x: x[1], reverse=True)
+                for qa_category, acc in sorted_categories:
+                    f.write(f"{qa_category}: {acc:.4f} ({acc*100:.2f}%)\n")
+                f.write("\n")
+
+            f.write("=" * 60 + "\n")
+
+        print(f"✓ Saved summary to {summary_path}")
 
 
 def main():
@@ -484,6 +540,7 @@ def main():
         batch_size=args.batch_size,
         save_visualizations=args.save_visualizations,
         judge_mode=judge_mode,
+        skip_judging=args.skip_judging,
     )
 
 
