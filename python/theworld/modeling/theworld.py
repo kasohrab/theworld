@@ -14,19 +14,21 @@ from huggingface_hub import hf_hub_download
 
 from .cosmos_encoder import CosmosEncoder
 from .fusion import EmbeddingFusion
+from ..constants import DEFAULT_COSMOS_MODEL, DEFAULT_GEMMA_MODEL
 
 
 class TheWorld(nn.Module):
     def __init__(
         self,
         gemma_model_name,
-        cosmos_model_name="nvidia/Cosmos-Predict2-2B-Video2World",
+        cosmos_model_name=DEFAULT_COSMOS_MODEL,
         device="cuda",
         freeze_gemma_vision=True,
         freeze_gemma_language=True,
         freeze_cosmos_vae=True,
         random_projection_init=False,
         load_full_cosmos_pipeline=True,
+        load_cosmos=True,
     ):
         """
         TheWorld: Fused vision-language-world model combining Gemma 3 and Cosmos.
@@ -43,19 +45,22 @@ class TheWorld(nn.Module):
             freeze_cosmos_vae: If True, freeze Cosmos VAE encoder [default: True]
             random_projection_init: If True, randomly initialize projection layer (for ablation) [default: False]
             load_full_cosmos_pipeline: If True (default), load full Cosmos pipeline (transformer+VAE+scheduler).
-                                      If False, attempt to load only VAE (currently not supported due to custom architecture) [default: True]
+                                      If False, load only VAE (currently not supported due to custom architecture) [default: True]
+            load_cosmos: If True (default), load Cosmos world model. If False, skip all Cosmos loading for Gemma-only baseline [default: True]
 
         Trainable components (by default):
             - world_projection: Projects Cosmos latents (16-dim) to Gemma dimension (2304-dim)
 
         Note: Cosmos encoder now uses single-frame encoding only (no temporal prediction).
               Cosmos VAE uses custom architecture, so full pipeline is required (load_full_cosmos_pipeline must be True).
+              When load_cosmos=False, only Gemma components are loaded for baseline evaluation.
         """
         super(TheWorld, self).__init__()
 
         self.device = device
         self.random_projection_init = random_projection_init  # For ablation studies
         self.load_full_cosmos_pipeline = load_full_cosmos_pipeline  # Feature flag for optimization
+        self.load_cosmos = load_cosmos  # Whether to load Cosmos at all
 
         # Store model names for checkpointing
         self.gemma_model_name = gemma_model_name
@@ -65,6 +70,17 @@ class TheWorld(nn.Module):
         self.freeze_gemma_vision = freeze_gemma_vision
         self.freeze_gemma_language = freeze_gemma_language
         self.freeze_cosmos_vae = freeze_cosmos_vae
+
+        # Validate configuration: if Cosmos not loaded, Cosmos-related flags are meaningless
+        if not load_cosmos:
+            if not freeze_cosmos_vae:
+                raise ValueError(
+                    "Invalid configuration: load_cosmos=False but freeze_cosmos_vae=False. "
+                    "Cannot train Cosmos VAE when Cosmos is not loaded."
+                )
+            if not load_full_cosmos_pipeline:
+                # This is OK but warn user it's redundant
+                print("⚠ Warning: load_cosmos=False makes load_full_cosmos_pipeline irrelevant (Cosmos not loaded at all)")
 
         # --- 1. Load Gemma first (uses device_map="auto" for efficient GPU loading) ---
         print("Loading Gemma 3 vision-language model...")
@@ -84,106 +100,119 @@ class TheWorld(nn.Module):
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-        # --- 2. Load Cosmos (conditionally: full pipeline or VAE only) ---
-        if load_full_cosmos_pipeline:
-            # Load full pipeline (includes transformer, VAE, scheduler, safety checker)
-            # Useful for future features like autoregressive rollout
-            print("Loading full Cosmos pipeline (transformer + VAE + scheduler)...")
-            from cosmos_guardrail import CosmosSafetyChecker
+        # --- 2. Load Cosmos (conditionally: full pipeline or VAE only, or skip entirely) ---
+        if load_cosmos:
+            if load_full_cosmos_pipeline:
+                # Load full pipeline (includes transformer, VAE, scheduler, safety checker)
+                # Useful for future features like autoregressive rollout
+                print("Loading full Cosmos pipeline (transformer + VAE + scheduler)...")
+                from cosmos_guardrail import CosmosSafetyChecker
 
-            safety_checker = CosmosSafetyChecker()
-            self.cosmos_pipe: Optional[Cosmos2VideoToWorldPipeline] = Cosmos2VideoToWorldPipeline.from_pretrained(
-                cosmos_model_name,
-                torch_dtype=torch.bfloat16,
-                safety_checker=safety_checker,
-                low_cpu_mem_usage=True,
-                local_files_only=False,
-            )
-            self.cosmos_pipe = self.cosmos_pipe.to(device)
-            self.cosmos_vae = self.cosmos_pipe.vae
-            print(f"✓ Full Cosmos pipeline loaded to {device}")
+                safety_checker = CosmosSafetyChecker()
+                self.cosmos_pipe: Optional[Cosmos2VideoToWorldPipeline] = Cosmos2VideoToWorldPipeline.from_pretrained(
+                    cosmos_model_name,
+                    torch_dtype=torch.bfloat16,
+                    safety_checker=safety_checker,
+                    low_cpu_mem_usage=True,
+                    local_files_only=False,
+                )
+                self.cosmos_pipe = self.cosmos_pipe.to(device)
+                self.cosmos_vae = self.cosmos_pipe.vae
+                print(f"✓ Full Cosmos pipeline loaded to {device}")
+            else:
+                # Optimized: Load only VAE (saves 2B-14B params from transformer/decoder)
+                print("Loading Cosmos VAE only (optimized, skipping transformer)...")
+
+                self.cosmos_vae = AutoencoderKL.from_pretrained(
+                    cosmos_model_name,
+                    subfolder="vae",
+                    torch_dtype=torch.bfloat16,
+                    low_cpu_mem_usage=True,
+                    local_files_only=False,
+                )
+                target_device: torch.device = torch.device(device)
+                _ = self.cosmos_vae.to(target_device)
+                self.cosmos_pipe = None  # Not loaded in optimized mode
+                print(f"✓ Cosmos VAE loaded to {device} (transformer not loaded)")
+
+            # Store reference to VAE encoder for freezing logic
+            self.cosmos_vae_encoder = self.cosmos_vae.encoder
+
+            # Final cleanup
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
         else:
-            # Optimized: Load only VAE (saves 2B-14B params from transformer/decoder)
-            print("Loading Cosmos VAE only (optimized, skipping transformer)...")
-
-            self.cosmos_vae = AutoencoderKL.from_pretrained(
-                cosmos_model_name,
-                subfolder="vae",
-                torch_dtype=torch.bfloat16,
-                low_cpu_mem_usage=True,
-                local_files_only=False,
-            )
-            target_device: torch.device = torch.device(device)
-            _ = self.cosmos_vae.to(target_device)
-            self.cosmos_pipe = None  # Not loaded in optimized mode
-            print(f"✓ Cosmos VAE loaded to {device} (transformer not loaded)")
-
-        # Store reference to VAE encoder for freezing logic
-        self.cosmos_vae_encoder = self.cosmos_vae.encoder
-
-        # Final cleanup
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+            # Skip Cosmos loading entirely (Gemma-only baseline mode)
+            print("⊘ Skipping Cosmos loading (load_cosmos=False, Gemma-only mode)")
+            self.cosmos_pipe = None
+            self.cosmos_vae = None
+            self.cosmos_vae_encoder = None
         self.processor = AutoProcessor.from_pretrained(
             gemma_model_name,
             local_files_only=False,
         )
 
-        # Get the output dimensions from the Cosmos encoder and Gemma
-        # We use the true latent space dimension (z_dim=16), not the encoder output (32)
-        # See docs/world_model_latent_space.md for explanation
-        cosmos_img_dim = getattr(self.cosmos_vae.config, "z_dim", 16)  # 16-dim latent space
-        # Gemma3 uses 'hidden_size' in text_config
-        gemma_dim = self.gemma.config.text_config.hidden_size
-
-        # Add bracket special tokens for world model embeddings using Gemma's custom token slots
-        # Gemma reserves 99 custom tokens (tokenizer.special_tokens.CUSTOM + 0 to 98)
-        # We use slots 0 and 1 for <start_of_world> and <end_of_world>
-        custom_tokens = {
-            0: "<start_of_world>",  # SOW - marks beginning of world embeddings
-            1: "<end_of_world>",    # EOW - marks end of world embeddings
-        }
-
-        # Add custom tokens to tokenizer vocabulary
-        num_added = self.processor.tokenizer.add_special_tokens(
-            {"additional_special_tokens": list(custom_tokens.values())}
-        )
-
-        # Resize embedding layer if tokens were added
-        if num_added > 0:
-            self.gemma.resize_token_embeddings(len(self.processor.tokenizer))
-            print(f"✓ Added {num_added} custom tokens to vocabulary")
-
-        # Store token IDs for use in modules
-        self.sow_token_id = self.processor.tokenizer.convert_tokens_to_ids("<start_of_world>")
-        self.eow_token_id = self.processor.tokenizer.convert_tokens_to_ids("<end_of_world>")
-
-        print(f"✓ Custom token IDs: SOW={self.sow_token_id}, EOW={self.eow_token_id}")
-
         # --- Create modular components ---
+        if load_cosmos:
+            # Get the output dimensions from the Cosmos encoder and Gemma
+            # We use the true latent space dimension (z_dim=16), not the encoder output (32)
+            # See docs/world_model_latent_space.md for explanation
+            cosmos_img_dim = getattr(self.cosmos_vae.config, "z_dim", 16)  # 16-dim latent space
+            # Gemma3 uses 'hidden_size' in text_config
+            gemma_dim = self.gemma.config.text_config.hidden_size
 
-        # CosmosEncoder: Handles VAE encoding and projection (single-frame only)
-        self.cosmos_encoder = CosmosEncoder(
-            cosmos_vae=self.cosmos_vae,
-            cosmos_dim=cosmos_img_dim,
-            gemma_dim=gemma_dim,
-            device=device,
-            freeze_vae=freeze_cosmos_vae,
-        )
+            # Add bracket special tokens for world model embeddings using Gemma's custom token slots
+            # Gemma reserves 99 custom tokens (tokenizer.special_tokens.CUSTOM + 0 to 98)
+            # We use slots 0 and 1 for <start_of_world> and <end_of_world>
+            custom_tokens = {
+                0: "<start_of_world>",  # SOW - marks beginning of world embeddings
+                1: "<end_of_world>",    # EOW - marks end of world embeddings
+            }
 
-        # Optionally reinitialize projection with random weights (for ablation studies)
-        if random_projection_init:
-            nn.init.xavier_uniform_(self.cosmos_encoder.world_projection.weight)
-            if self.cosmos_encoder.world_projection.bias is not None:
-                nn.init.zeros_(self.cosmos_encoder.world_projection.bias)
-            print("⚠ Projection layer randomly initialized (ablation mode)")
+            # Add custom tokens to tokenizer vocabulary
+            num_added = self.processor.tokenizer.add_special_tokens(
+                {"additional_special_tokens": list(custom_tokens.values())}
+            )
 
-        # EmbeddingFusion: Handles inserting world tokens between brackets
-        self.fusion = EmbeddingFusion(
-            sow_token_id=self.sow_token_id,
-            eow_token_id=self.eow_token_id,
-        )
+            # Resize embedding layer if tokens were added
+            if num_added > 0:
+                self.gemma.resize_token_embeddings(len(self.processor.tokenizer))
+                print(f"✓ Added {num_added} custom tokens to vocabulary")
+
+            # Store token IDs for use in modules
+            self.sow_token_id = self.processor.tokenizer.convert_tokens_to_ids("<start_of_world>")
+            self.eow_token_id = self.processor.tokenizer.convert_tokens_to_ids("<end_of_world>")
+
+            print(f"✓ Custom token IDs: SOW={self.sow_token_id}, EOW={self.eow_token_id}")
+
+            # CosmosEncoder: Handles VAE encoding and projection (single-frame only)
+            self.cosmos_encoder = CosmosEncoder(
+                cosmos_vae=self.cosmos_vae,
+                cosmos_dim=cosmos_img_dim,
+                gemma_dim=gemma_dim,
+                device=device,
+                freeze_vae=freeze_cosmos_vae,
+            )
+
+            # Optionally reinitialize projection with random weights (for ablation studies)
+            if random_projection_init:
+                nn.init.xavier_uniform_(self.cosmos_encoder.world_projection.weight)
+                if self.cosmos_encoder.world_projection.bias is not None:
+                    nn.init.zeros_(self.cosmos_encoder.world_projection.bias)
+                print("⚠ Projection layer randomly initialized (ablation mode)")
+
+            # EmbeddingFusion: Handles inserting world tokens between brackets
+            self.fusion = EmbeddingFusion(
+                sow_token_id=self.sow_token_id,
+                eow_token_id=self.eow_token_id,
+            )
+        else:
+            # Gemma-only mode: No world tokens or Cosmos encoder needed
+            self.cosmos_encoder = None
+            self.fusion = None
+            self.sow_token_id = None
+            self.eow_token_id = None
 
         # Expose device map from Gemma to TheWorld (for HuggingFace Trainer compatibility)
         # This prevents Trainer from trying to move the model when device_map="auto" is used
@@ -246,20 +275,21 @@ class TheWorld(nn.Module):
                 param.requires_grad = True
             print("✓ Gemma language model trainable")
 
-        # 3. Freeze/unfreeze Cosmos VAE encoder
-        if self.freeze_cosmos_vae:
-            for param in self.cosmos_vae_encoder.parameters():
-                param.requires_grad = False
-            print("✓ Cosmos VAE encoder frozen")
-        else:
-            for param in self.cosmos_vae_encoder.parameters():
-                param.requires_grad = True
-            print("✓ Cosmos VAE encoder trainable")
+        # 3. Freeze/unfreeze Cosmos VAE encoder (only if Cosmos loaded)
+        if self.load_cosmos:
+            if self.freeze_cosmos_vae:
+                for param in self.cosmos_vae_encoder.parameters():
+                    param.requires_grad = False
+                print("✓ Cosmos VAE encoder frozen")
+            else:
+                for param in self.cosmos_vae_encoder.parameters():
+                    param.requires_grad = True
+                print("✓ Cosmos VAE encoder trainable")
 
-        # 4. Always keep projection layer trainable (core trainable component)
-        for param in self.cosmos_encoder.world_projection.parameters():
-            param.requires_grad = True
-        print("✓ World projection layer trainable")
+            # 4. Always keep projection layer trainable (core trainable component)
+            for param in self.cosmos_encoder.world_projection.parameters():
+                param.requires_grad = True
+            print("✓ World projection layer trainable")
 
         # Print final trainable parameter count
         trainable, total, pct = self.get_trainable_parameters()
@@ -270,6 +300,32 @@ class TheWorld(nn.Module):
         trainable = sum(p.numel() for p in self.parameters() if p.requires_grad)
         total = sum(p.numel() for p in self.parameters())
         return trainable, total, 100 * trainable / total
+
+    def eval(self):
+        """Set model to evaluation mode.
+
+        Sets eval mode on all components:
+        - Gemma model (vision + language)
+        - Cosmos pipeline (if loaded)
+        - All custom modules
+        """
+        # Set parent module to eval
+        super().eval()
+
+        # Set Gemma to eval mode
+        self.gemma.eval()
+
+        # Set Cosmos to eval mode if loaded
+        if self.load_cosmos and self.cosmos_pipe is not None:
+            # Set VAE to eval mode
+            if hasattr(self.cosmos_pipe, "vae") and self.cosmos_pipe.vae is not None:
+                self.cosmos_pipe.vae.eval()
+            # Set other pipeline components to eval
+            for component_name, component in self.cosmos_pipe.components.items():
+                if component is not None and hasattr(component, "eval"):
+                    component.eval()
+
+        return self
 
     def state_dict(self, *args, **kwargs):
         """Save only trainable parameters.
@@ -491,8 +547,8 @@ class TheWorld(nn.Module):
         freeze_config = checkpoint.get("freeze_config", {})
 
         # Get model names from checkpoint
-        gemma_model_name = model_config.get("gemma_model_name", "google/gemma-3-4b-it")
-        cosmos_model_name = model_config.get("cosmos_model_name", "nvidia/Cosmos-Predict2-2B-Video2World")
+        gemma_model_name = model_config.get("gemma_model_name", DEFAULT_GEMMA_MODEL)
+        cosmos_model_name = model_config.get("cosmos_model_name", DEFAULT_COSMOS_MODEL)
         load_full_cosmos_pipeline = model_config.get("load_full_cosmos_pipeline", True)
 
         # Get freeze configuration
@@ -558,7 +614,17 @@ class TheWorld(nn.Module):
 
         Returns:
             CausalLMOutputWithPast with loss, logits, and optionally past_key_values
+
+        Note: If Cosmos was not loaded (load_cosmos=False), this method will raise an error.
+              For Gemma-only inference, use generate(skip_world_tokens=True) instead.
         """
+        # Check if Cosmos is loaded (required for training/forward pass with world tokens)
+        if not self.load_cosmos or self.cosmos_encoder is None:
+            raise RuntimeError(
+                "Forward pass with world tokens requires Cosmos to be loaded. "
+                "Either initialize with load_cosmos=True, or use generate(skip_world_tokens=True) for Gemma-only inference."
+            )
+
         # ========================================
         # STEP 1: Encode world via Cosmos (single-frame only)
         # ========================================
@@ -818,56 +884,110 @@ class TheWorld(nn.Module):
 
     def _generate_gemma_only(
         self,
-        image: Union[Image.Image, np.ndarray, Tensor],
-        prompt: str,
+        image: Union[Image.Image, np.ndarray, Tensor, list],
+        prompt: Union[str, list],
         max_new_tokens: int = 50,
         temperature: float = 0.0,
         **kwargs: Union[str, int, float, bool],
-    ) -> str:
+    ) -> Union[str, list]:
         """
         Generate using only Gemma (no world model) - for ablation studies.
 
+        Supports both single and batch inputs implicitly.
+
         Args:
-            image: Input image (PIL, numpy, or tensor)
-            prompt: Text prompt/question
+            image: Input image (PIL, numpy, tensor) OR list of images for batch
+            prompt: Text prompt/question OR list of prompts for batch
             max_new_tokens: Maximum tokens to generate
             temperature: Sampling temperature (0 = greedy)
             **kwargs: Additional generation parameters
 
         Returns:
-            Generated text response (Gemma baseline)
+            Generated text response (single string) OR list of responses (if batch input)
+
+        Examples:
+            >>> # Single input
+            >>> response = model._generate_gemma_only(image, "What is this?")
+            >>>
+            >>> # Batch input
+            >>> responses = model._generate_gemma_only([img1, img2], ["Q1", "Q2"])
         """
 
-        pil_image = self._prepare_image(image)
+        # Detect if batch or single input
+        is_batch = isinstance(image, list) or isinstance(prompt, list)
 
-        # Format WITHOUT world bracket tokens
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image", "image": pil_image},
-                    {"type": "text", "text": prompt},
-                ],
-            }
-        ]
-
-        inputs = self.processor.apply_chat_template(
-            messages,
-            tokenize=True,
-            add_generation_prompt=True,
-            return_tensors="pt",
-        )
-
-        # Move to device and prepare for generate
-        if isinstance(inputs, dict):
-            inputs = {k: v.to(self.gemma.device) if hasattr(v, "to") else v for k, v in inputs.items()}
-            input_ids = inputs["input_ids"]
-        elif isinstance(inputs, Tensor):
-            inputs = inputs.to(self.gemma.device)
-            input_ids = inputs
-            inputs = {"input_ids": input_ids}
+        if not is_batch:
+            # Wrap single items in lists for uniform processing
+            images = [image]
+            prompts = [prompt]
         else:
-            raise ValueError(f"Unsupported inputs type: {type(inputs)}")
+            # Handle mixed single/batch inputs
+            images = image if isinstance(image, list) else [image] * len(prompt)
+            prompts = prompt if isinstance(prompt, list) else [prompt] * len(image)
+
+        # Prepare images
+        pil_images = [self._prepare_image(img) for img in images]
+
+        # Process each sample individually (processor doesn't support batched images properly)
+        # Then manually batch the tensors
+        all_input_ids = []
+        all_attention_masks = []
+        all_pixel_values = []
+
+        for pil_img, p in zip(pil_images, prompts):
+            # Format WITHOUT world bracket tokens - single conversation
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image", "image": pil_img},
+                        {"type": "text", "text": p},
+                    ],
+                }
+            ]
+
+            # Process single conversation
+            sample_inputs = self.processor.apply_chat_template(
+                messages,
+                tokenize=True,
+                add_generation_prompt=True,
+                return_dict=True,
+                return_tensors="pt",
+            )
+
+            all_input_ids.append(sample_inputs["input_ids"])
+            all_attention_masks.append(sample_inputs["attention_mask"])
+            all_pixel_values.append(sample_inputs["pixel_values"])
+
+        # Manual batching with padding
+        import torch
+
+        # Pad input_ids and attention_mask to max length
+        # Use LEFT padding for decoder-only models (prepend padding tokens)
+        max_len = max(ids.shape[1] for ids in all_input_ids)
+        pad_token_id = self.processor.tokenizer.pad_token_id
+
+        batched_input_ids = []
+        batched_attention_masks = []
+        for ids, mask in zip(all_input_ids, all_attention_masks):
+            pad_len = max_len - ids.shape[1]
+            if pad_len > 0:
+                # Left-pad: prepend padding to the beginning
+                ids = torch.cat([torch.full((1, pad_len), pad_token_id, dtype=ids.dtype), ids], dim=1)
+                mask = torch.cat([torch.zeros((1, pad_len), dtype=mask.dtype), mask], dim=1)
+            batched_input_ids.append(ids)
+            batched_attention_masks.append(mask)
+
+        # Stack into batches
+        inputs = {
+            "input_ids": torch.cat(batched_input_ids, dim=0),
+            "attention_mask": torch.cat(batched_attention_masks, dim=0),
+            "pixel_values": torch.cat(all_pixel_values, dim=0),
+        }
+
+        # Move to device
+        inputs = {k: v.to(self.gemma.device) if hasattr(v, "to") else v for k, v in inputs.items()}
+        input_ids = inputs["input_ids"]
 
         # Generate using Gemma only
         with torch.no_grad():
@@ -881,44 +1001,55 @@ class TheWorld(nn.Module):
                 **kwargs,
             )
 
-        # Decode
+        # Decode all responses
         input_len = input_ids.shape[1]
+        batch_size = outputs.shape[0]
 
-        generated_ids = outputs[:, input_len:]
-        response = self.processor.decode(generated_ids[0], skip_special_tokens=True)
+        responses = []
+        for i in range(batch_size):
+            generated_ids = outputs[i, input_len:]
+            response = self.processor.decode(generated_ids, skip_special_tokens=True)
+            responses.append(response.strip())
 
-        return response.strip()
+        # Return single string or list based on input
+        return responses[0] if not is_batch else responses
 
     def generate(
         self,
-        image: Union[Image.Image, np.ndarray, Tensor],
-        prompt: str,
+        image: Union[Image.Image, np.ndarray, Tensor, list],
+        prompt: Union[str, list],
         max_new_tokens: int = 50,
         temperature: float = 0.0,
         skip_world_tokens: bool = False,
         **kwargs: Union[str, int, float, bool],
-    ) -> str:
+    ) -> Union[str, list]:
         """
         Generate text response for image and prompt.
+
+        Supports both single and batch inputs implicitly.
 
         This method routes to either:
         - World-aware generation (uses world embeddings via KV cache) [DEFAULT]
         - Gemma-only baseline (ablation mode, skip_world_tokens=True)
 
         Args:
-            image: Input image (PIL, numpy, or tensor)
-            prompt: Text prompt/question
+            image: Input image (PIL, numpy, tensor) OR list of images for batch
+            prompt: Text prompt/question OR list of prompts for batch
             max_new_tokens: Maximum tokens to generate
             temperature: Sampling temperature (0 = greedy)
             skip_world_tokens: If True, use Gemma baseline without world model (ablation mode)
             **kwargs: Additional generation parameters (top_k, top_p, etc.)
 
         Returns:
-            Generated text response
+            Generated text response (single string) OR list of responses (if batch input)
 
-        Example:
+        Examples:
             >>> model = TheWorld("google/gemma-3-4b-it")
-            >>> response = model.generate(image, "What is in this image?")  # Uses world model
+            >>> # Single input
+            >>> response = model.generate(image, "What is in this image?")
+            >>>
+            >>> # Batch input
+            >>> responses = model.generate([img1, img2], ["Q1", "Q2"])
             >>> baseline = model.generate(image, "What is in this image?", skip_world_tokens=True)  # Ablation
         """
 

@@ -373,6 +373,50 @@ theworld/
 
 **Important**: NEVER create test/validation scripts in the repository root. Always use the appropriate tests subdirectory.
 
+### Using Global Constants
+
+**ALWAYS use `python/theworld/constants.py` for global constants** instead of hardcoding values throughout the codebase.
+
+**What belongs in constants.py:**
+- Special token IDs (BOS, EOS, PAD, image tokens, world tokens)
+- Model names and HuggingFace IDs
+- Configuration values used across multiple modules
+- Any magic numbers that appear in multiple places
+
+**Current constants available:**
+```python
+from theworld.constants import (
+    # Token IDs
+    BOS_TOKEN_ID,              # 2 - Beginning of sequence
+    EOS_TOKEN_ID,              # 1 - End of sequence
+    PAD_TOKEN_ID,              # 0 - Padding token
+    IMAGE_SOFT_TOKEN_ID,       # 262144 - Vision encoder placeholder
+
+    # Custom token slots and names
+    CUSTOM_TOKEN_SLOT_SOW,     # 0 - <start_of_world> slot
+    CUSTOM_TOKEN_SLOT_EOW,     # 1 - <end_of_world> slot
+    CUSTOM_TOKEN_SOW,          # "<start_of_world>" string
+    CUSTOM_TOKEN_EOW,          # "<end_of_world>" string
+
+    # Default models
+    DEFAULT_GEMMA_MODEL,       # "google/gemma-3-4b-it"
+    DEFAULT_COSMOS_MODEL,      # "nvidia/Cosmos-Predict2-2B-Video2World"
+)
+```
+
+**Example usage:**
+```python
+# Good - uses constants
+from theworld.constants import BOS_TOKEN_ID, IMAGE_SOFT_TOKEN_ID
+
+if token_id == IMAGE_SOFT_TOKEN_ID:
+    # Handle image token
+
+# Bad - hardcoded magic number
+if token_id == 262144:  # Don't do this!
+    # Handle image token
+```
+
 ### Adding New Training Configurations
 
 To add a new freeze configuration:

@@ -1,0 +1,50 @@
+============================================================
+SPATIAL RGPT-BENCH EVALUATION RESULTS
+============================================================
+Model: google/gemma-3-4b-it
+Batch Size: 64
+Load Cosmos: False
+Results File: outputs/spatial_rgpt_gemma_baseline_full_batched_manual_fix.jsonl
+
+============================================================
+OVERALL ACCURACY
+============================================================
+Total Samples: 1406
+Correct: 1103
+Accuracy: 0.7845 (78.45%)
+
+============================================================
+BY QUESTION TYPE
+============================================================
+qualitative: 0.7747 (77.47%)
+quantitative: 0.7931 (79.31%)
+
+============================================================
+BY CATEGORY (DETAILED BREAKDOWN)
+============================================================
+short_choice: 0.9394 (93.94%)
+thin_predicate: 0.9375 (93.75%)
+direction: 0.9159 (91.59%)
+height_data: 0.8947 (89.47%)
+below_choice: 0.8947 (89.47%)
+tall_choice: 0.8710 (87.10%)
+above_predicate: 0.8649 (86.49%)
+above_choice: 0.8621 (86.21%)
+right_choice: 0.8333 (83.33%)
+wide_predicate: 0.8214 (82.14%)
+front_predicate: 0.8000 (80.00%)
+horizontal_distance_data: 0.7951 (79.51%)
+vertical_distance_data: 0.7925 (79.25%)
+left_choice: 0.7857 (78.57%)
+width_data: 0.7519 (75.19%)
+big_predicate: 0.7377 (73.77%)
+small_predicate: 0.7333 (73.33%)
+tall_predicate: 0.7308 (73.08%)
+behind_predicate: 0.7091 (70.91%)
+below_predicate: 0.6571 (65.71%)
+distance_data: 0.6486 (64.86%)
+left_predicate: 0.6400 (64.00%)
+short_predicate: 0.5455 (54.55%)
+right_predicate: 0.4643 (46.43%)
+
+============================================================
