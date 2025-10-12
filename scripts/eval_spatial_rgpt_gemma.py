@@ -9,7 +9,8 @@ Usage (example):
         --output outputs/spatial_rgpt_gemma_results.jsonl \
         --max-samples 200
 
-This script intentionally does NOT compute or use depth maps — it is a baseline
+This script uses TheWorld with load_cosmos=False for Gemma-only baseline evaluation.
+It intentionally does NOT compute or use depth maps — it is a baseline
 that uses Gemma-only inputs so you can compare against Spatial-RGPT depth-based outputs.
 """
 
@@ -23,11 +24,12 @@ from tqdm import tqdm
 
 # Add project root to path
 import sys
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from theworld.datasets.spatial_rgpt import SpatialRGPTDataset
-from theworld.baselines import Gemma3Baseline
+from theworld import TheWorld
 
 
 def parse_args():
@@ -52,6 +54,7 @@ def parse_choice_from_text(generated_text: str, choices: Optional[list]) -> str:
         return text.upper()
     # Letter at start
     import re
+
     m = re.match(r"^([A-Da-d])[\):\.\s]", text)
     if m:
         return m.group(1).upper()
@@ -64,11 +67,19 @@ def parse_choice_from_text(generated_text: str, choices: Optional[list]) -> str:
     return ""
 
 
-def run_eval(data_path: str, model_name: str, device: str, output_path: str, max_samples: int, max_new_tokens: int, temperature: float):
+def run_eval(
+    data_path: str,
+    model_name: str,
+    device: str,
+    output_path: str,
+    max_samples: int,
+    max_new_tokens: int,
+    temperature: float,
+):
     # Load dataset: support local JSONL path or HuggingFace dataset id
     data_path_obj = Path(data_path)
     if data_path_obj.exists():
-        ds = SpatialRGPTDataset(data_path_obj, num_samples=max_samples if max_samples>0 else None)
+        ds = SpatialRGPTDataset(data_path_obj, num_samples=max_samples if max_samples > 0 else None)
     else:
         # Try loading as a HuggingFace dataset id. Try common eval splits, then fallback to no split.
         from datasets import load_dataset as hf_load_dataset
@@ -88,10 +99,17 @@ def run_eval(data_path: str, model_name: str, device: str, output_path: str, max
             except Exception as e:
                 raise RuntimeError(f"Failed to load HuggingFace dataset '{data_path}' (tried splits {tried}): {e}")
 
-        ds = SpatialRGPTDataset(hf_dataset, num_samples=max_samples if max_samples>0 else None)
+        ds = SpatialRGPTDataset(hf_dataset, num_samples=max_samples if max_samples > 0 else None)
 
-    # Init baseline
-    baseline = Gemma3Baseline.from_pretrained(model_name, device=device)
+    # Init TheWorld in Gemma-only mode (no Cosmos loading)
+    print(f"Loading TheWorld model (Gemma-only, load_cosmos=False): {model_name}")
+    model = TheWorld(
+        gemma_model_name=model_name,
+        device=device,
+        load_cosmos=False,  # Skip Cosmos loading for baseline evaluation
+    )
+    model.eval()  # Set to evaluation mode
+    print(f"✓ Model loaded in evaluation mode")
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -103,11 +121,12 @@ def run_eval(data_path: str, model_name: str, device: str, output_path: str, max
             prompt = ex["question"]
 
             try:
-                response = baseline.generate(
+                response = model.generate(
                     image=img,
                     prompt=prompt,
                     max_new_tokens=max_new_tokens,
                     temperature=temperature,
+                    skip_world_tokens=True,  # Gemma-only baseline mode
                 )
             except Exception as e:
                 response = f"<ERROR: {e}>"
