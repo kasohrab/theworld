@@ -1,4 +1,5 @@
 from theworld import TheWorld
+from theworld.constants import DEFAULT_GEMMA_MODEL
 from theworld.data import create_theworld_collator
 from theworld.generation import greedy_decode
 from PIL import Image
@@ -14,7 +15,7 @@ def main():
     print("Loading model...")
     print("=" * 60)
 
-    model = TheWorld("google/gemma-3-4b-it", device=device, num_world_steps=4)
+    model = TheWorld(DEFAULT_GEMMA_MODEL, device=device, num_world_steps=4)
 
     # Create dummy image (random for testing)
     dummy_image = Image.new("RGB", (896, 896), color=(100, 150, 200))

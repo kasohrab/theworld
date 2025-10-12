@@ -35,6 +35,7 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from theworld import TheWorld, Gemma3Baseline
+from theworld.constants import DEFAULT_GEMMA_MODEL
 
 
 def parse_args():
@@ -393,10 +394,10 @@ def main():
     print(f"Device: {args.device}")
 
     # Detect model type
-    if args.model.lower() in ["gemma3-baseline", "gemma3", "google/gemma-3-4b-it"]:
+    if args.model.lower() in ["gemma3-baseline", "gemma3", DEFAULT_GEMMA_MODEL]:
         # Load Gemma baseline
         if args.model.lower() in ["gemma3-baseline", "gemma3"]:
-            model_name = "google/gemma-3-4b-it"
+            model_name = DEFAULT_GEMMA_MODEL
         else:
             model_name = args.model
 

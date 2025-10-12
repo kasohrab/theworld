@@ -5,6 +5,8 @@ Training configuration for TheWorld model.
 from dataclasses import dataclass
 from typing import Optional
 
+from theworld.constants import DEFAULT_COSMOS_MODEL, DEFAULT_GEMMA_MODEL
+
 
 @dataclass
 class TrainingConfig:
@@ -68,8 +70,8 @@ class TrainingConfig:
     """
 
     # Model configuration
-    model_name: str = "google/gemma-3-4b-it"
-    cosmos_model_name: str = "nvidia/Cosmos-Predict2-2B-Video2World"
+    model_name: str = DEFAULT_GEMMA_MODEL
+    cosmos_model_name: str = DEFAULT_COSMOS_MODEL
     num_world_steps: int = 0
     max_world_steps: int = 16
     freeze_gemma_vision: bool = True

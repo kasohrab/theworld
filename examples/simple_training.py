@@ -1,4 +1,5 @@
 from theworld import TheWorld
+from theworld.constants import DEFAULT_GEMMA_MODEL
 from theworld.data import create_theworld_collator
 from PIL import Image
 
@@ -11,7 +12,7 @@ def main():
     # Initialize model with trainable projection layers only
     print("\n1. Loading model...")
     model = TheWorld(
-        "google/gemma-3-4b-it",
+        DEFAULT_GEMMA_MODEL,
         device="cuda",
         num_world_steps=0,  # Start with single-step for faster training
         freeze_gemma_vision=True,  # Freeze vision encoder

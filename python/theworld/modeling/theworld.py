@@ -14,13 +14,14 @@ from huggingface_hub import hf_hub_download
 
 from .cosmos_encoder import CosmosEncoder
 from .fusion import EmbeddingFusion
+from ..constants import DEFAULT_COSMOS_MODEL, DEFAULT_GEMMA_MODEL
 
 
 class TheWorld(nn.Module):
     def __init__(
         self,
         gemma_model_name,
-        cosmos_model_name="nvidia/Cosmos-Predict2-2B-Video2World",
+        cosmos_model_name=DEFAULT_COSMOS_MODEL,
         device="cuda",
         freeze_gemma_vision=True,
         freeze_gemma_language=True,
@@ -546,8 +547,8 @@ class TheWorld(nn.Module):
         freeze_config = checkpoint.get("freeze_config", {})
 
         # Get model names from checkpoint
-        gemma_model_name = model_config.get("gemma_model_name", "google/gemma-3-4b-it")
-        cosmos_model_name = model_config.get("cosmos_model_name", "nvidia/Cosmos-Predict2-2B-Video2World")
+        gemma_model_name = model_config.get("gemma_model_name", DEFAULT_GEMMA_MODEL)
+        cosmos_model_name = model_config.get("cosmos_model_name", DEFAULT_COSMOS_MODEL)
         load_full_cosmos_pipeline = model_config.get("load_full_cosmos_pipeline", True)
 
         # Get freeze configuration
@@ -920,19 +921,21 @@ class TheWorld(nn.Module):
             messages,
             tokenize=True,
             add_generation_prompt=True,
+            return_dict=True,  # Force dict output to get pixel_values
             return_tensors="pt",
         )
 
         # Move to device and prepare for generate
-        if isinstance(inputs, dict):
-            inputs = {k: v.to(self.gemma.device) if hasattr(v, "to") else v for k, v in inputs.items()}
-            input_ids = inputs["input_ids"]
-        elif isinstance(inputs, Tensor):
+        # Note: apply_chat_template with return_dict=True returns BatchFeature (dict-like)
+        if isinstance(inputs, Tensor):
+            # Legacy path: just input_ids tensor (not used anymore with return_dict=True)
             inputs = inputs.to(self.gemma.device)
             input_ids = inputs
             inputs = {"input_ids": input_ids}
         else:
-            raise ValueError(f"Unsupported inputs type: {type(inputs)}")
+            # Dict-like (dict or BatchFeature): contains input_ids, pixel_values, etc.
+            inputs = {k: v.to(self.gemma.device) if hasattr(v, "to") else v for k, v in inputs.items()}
+            input_ids = inputs["input_ids"]
 
         # Generate using Gemma only
         with torch.no_grad():
