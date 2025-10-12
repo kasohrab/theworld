@@ -11,13 +11,21 @@ from typing import Dict, Any, Optional, Union
 from PIL import Image
 
 
-def create_judge_prompt(question: str, ground_truth: str, prediction: str) -> str:
+def create_judge_prompt(
+    question: str,
+    ground_truth: str,
+    prediction: str,
+    judge_mode: str = "strict",
+    qa_type: Optional[str] = None,
+) -> str:
     """Create prompt for Gemma to judge answer correctness.
 
     Args:
         question: The original question asked
         ground_truth: The correct answer
         prediction: The model's predicted answer
+        judge_mode: Judging mode - "strict", "lenient", or "official"
+        qa_type: Question type ("qualitative" or "quantitative") - required for "official" mode
 
     Returns:
         Formatted prompt for judging
@@ -26,10 +34,46 @@ def create_judge_prompt(question: str, ground_truth: str, prediction: str) -> st
         >>> prompt = create_judge_prompt(
         ...     "What color is the car?",
         ...     "Red",
-        ...     "The car appears to be red."
+        ...     "The car appears to be red.",
+        ...     judge_mode="strict"
         ... )
     """
-    prompt = f"""You are evaluating spatial reasoning answers. Compare the prediction to the ground truth.
+    if judge_mode == "official":
+        # Official SpatialRGPT-Bench prompts (Tables 12 & 13 from paper)
+        if qa_type == "qualitative":
+            # Table 12: Qualitative evaluation (output 0 or 1)
+            prompt = f"""You are a helpful assistant designed to output JSON.
+You should help me to evaluate the response given the question and the correct answer.
+To mark a response, you should output a single integer between 0 and 1.
+(1) means that the response perfectly matches the answer.
+(0) means that the response is completely different from the answer.
+
+Question: {question}
+Correct Answer: {ground_truth}
+Response: {prediction}
+
+Output a single integer (0 or 1):"""
+        else:  # quantitative
+            # Table 13: Quantitative evaluation (convert to meters and compare)
+            prompt = f"""You are a helpful assistant designed to output JSON.
+You should help me to evaluate the response given the question and the correct answer.
+You need to convert the distance of the correct answer and response to meters.
+The conversion factors are as follows:
+1 inch = 0.0254 meters. 1 foot = 0.3048 meters. 1 centimeter (cm) = 0.01 meters.
+You should output two floats in meters, one for the answer, and one for the response.
+
+Question: {question}
+Correct Answer: {ground_truth}
+Response: {prediction}
+
+Output two floats in meters (answer, response):"""
+    elif judge_mode == "strict":
+        # Strict judging: prediction MUST contain ground truth
+        criteria = """Does the prediction contain the correct answer from the ground truth?
+The prediction MUST include the key information from the ground truth to be marked correct.
+Be strict - if the prediction contradicts or lacks the ground truth answer, mark it as incorrect."""
+
+        prompt = f"""You are evaluating spatial reasoning answers. Compare the prediction to the ground truth.
 
 Question: {question}
 
@@ -37,11 +81,28 @@ Ground Truth Answer: {ground_truth}
 
 Predicted Answer: {prediction}
 
-Does the prediction correctly answer the question based on the ground truth?
-Consider semantic equivalence - the prediction doesn't need exact wording.
+{criteria}
 
 Respond with ONLY "Yes" or "No" (one word).
 """
+    else:  # lenient
+        # Lenient judging: semantic equivalence allowed
+        criteria = """Does the prediction correctly answer the question based on the ground truth?
+Consider semantic equivalence - the prediction doesn't need exact wording."""
+
+        prompt = f"""You are evaluating spatial reasoning answers. Compare the prediction to the ground truth.
+
+Question: {question}
+
+Ground Truth Answer: {ground_truth}
+
+Predicted Answer: {prediction}
+
+{criteria}
+
+Respond with ONLY "Yes" or "No" (one word).
+"""
+
     return prompt.strip()
 
 
@@ -80,6 +141,63 @@ def parse_yes_no_response(response: str) -> bool:
     return False
 
 
+def parse_official_qualitative_response(response: str) -> bool:
+    """Parse 0/1 from official qualitative judge response.
+
+    Args:
+        response: Model's text response (should be 0 or 1)
+
+    Returns:
+        True if 1 (correct), False if 0 (incorrect) or unparseable
+
+    Example:
+        >>> parse_official_qualitative_response("1")
+        True
+        >>> parse_official_qualitative_response("0")
+        False
+    """
+    response_clean = response.strip()
+
+    # Try to extract first digit
+    import re
+
+    match = re.search(r"[01]", response_clean)
+    if match:
+        return match.group() == "1"
+
+    # Default to False
+    return False
+
+
+def parse_official_quantitative_response(response: str) -> tuple[Optional[float], Optional[float]]:
+    """Parse two floats from official quantitative judge response.
+
+    Args:
+        response: Model's text response (should contain two floats)
+
+    Returns:
+        Tuple of (ground_truth_meters, prediction_meters) or (None, None) if unparseable
+
+    Example:
+        >>> parse_official_quantitative_response("1.5 2.0")
+        (1.5, 2.0)
+        >>> parse_official_quantitative_response("Answer: 1.5 meters, Response: 2.0 meters")
+        (1.5, 2.0)
+    """
+    import re
+
+    # Try to extract all floats from response
+    floats = re.findall(r"[-+]?\d*\.?\d+", response)
+
+    if len(floats) >= 2:
+        try:
+            return (float(floats[0]), float(floats[1]))
+        except ValueError:
+            return (None, None)
+
+    return (None, None)
+
+
 def evaluate_with_gemma(
     model,
     question: Union[str, list],
@@ -87,6 +205,8 @@ def evaluate_with_gemma(
     ground_truth: Union[str, list],
     max_new_tokens: int = 10,
     temperature: float = 0.0,
+    judge_mode: str = "strict",
+    qa_type: Union[str, list, None] = None,
 ) -> Union[Dict[str, Any], list]:
     """Evaluate a spatial reasoning answer using Gemma-as-judge.
 
@@ -97,8 +217,10 @@ def evaluate_with_gemma(
         question: Original question (str or list of str)
         prediction: Model's predicted answer (str or list of str)
         ground_truth: Correct answer (str or list of str)
-        max_new_tokens: Max tokens for judge response (default: 10, just need "Yes"/"No")
+        max_new_tokens: Max tokens for judge response (default: 10)
         temperature: Sampling temperature (default: 0.0 for deterministic)
+        judge_mode: Judging mode - "strict", "lenient", or "official" (default: "strict")
+        qa_type: Question type (str or list of str) - required for "official" mode
 
     Returns:
         Dictionary with evaluation results (single input) or list of dicts (batch input):
@@ -139,6 +261,7 @@ def evaluate_with_gemma(
         questions = [question]
         predictions = [prediction]
         ground_truths = [ground_truth]
+        qa_types = [qa_type] if qa_type else [None]
     else:
         # Handle mixed single/batch inputs
         questions = question if isinstance(question, list) else [question] * max(
@@ -147,11 +270,12 @@ def evaluate_with_gemma(
         )
         predictions = prediction if isinstance(prediction, list) else [prediction] * len(questions)
         ground_truths = ground_truth if isinstance(ground_truth, list) else [ground_truth] * len(questions)
+        qa_types = qa_type if isinstance(qa_type, list) else [qa_type] * len(questions)
 
     # Create judge prompts for all samples
     judge_prompts = [
-        create_judge_prompt(q, gt, pred)
-        for q, gt, pred in zip(questions, ground_truths, predictions)
+        create_judge_prompt(q, gt, pred, judge_mode=judge_mode, qa_type=qtype)
+        for q, gt, pred, qtype in zip(questions, ground_truths, predictions, qa_types)
     ]
 
     # Generate judgments (text-only, no image needed for judging)
@@ -198,11 +322,31 @@ def evaluate_with_gemma(
         ]
         return error_results[0] if not is_batch else error_results
 
-    # Parse Yes/No for all responses
+    # Parse responses based on judge mode
     results = []
-    for judge_response, judge_prompt in zip(judge_responses, judge_prompts):
-        correct = parse_yes_no_response(judge_response)
-        score = 1.0 if correct else 0.0
+    for judge_response, judge_prompt, qtype in zip(judge_responses, judge_prompts, qa_types):
+        if judge_mode == "official":
+            # Official mode: parse based on qa_type
+            if qtype == "qualitative":
+                # Parse 0/1
+                correct = parse_official_qualitative_response(judge_response)
+                score = 1.0 if correct else 0.0
+            else:  # quantitative
+                # Parse two floats and compare
+                gt_meters, pred_meters = parse_official_quantitative_response(judge_response)
+                if gt_meters is not None and pred_meters is not None:
+                    # Consider correct if within 20% or 0.5 meters (whichever is larger)
+                    threshold = max(0.5, 0.2 * gt_meters)
+                    correct = abs(gt_meters - pred_meters) <= threshold
+                    score = 1.0 if correct else 0.0
+                else:
+                    # Failed to parse - mark as incorrect
+                    correct = False
+                    score = 0.0
+        else:
+            # Strict/lenient modes: parse Yes/No
+            correct = parse_yes_no_response(judge_response)
+            score = 1.0 if correct else 0.0
 
         results.append({
             "score": score,

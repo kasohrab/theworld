@@ -108,6 +108,24 @@ def parse_args():
         default=1,
         help="Batch size for evaluation (default: 1 for no batching)",
     )
+    p.add_argument(
+        "--save-visualizations",
+        action="store_true",
+        default=False,
+        help="Save bbox images and responses for each sample",
+    )
+    p.add_argument(
+        "--lenient-judge",
+        action="store_true",
+        default=False,
+        help="Use lenient judge (semantic equivalence). Default: strict judge",
+    )
+    p.add_argument(
+        "--official-judge",
+        action="store_true",
+        default=False,
+        help="Use official SpatialRGPT-Bench judge prompts (GPT-4 style). Overrides --lenient-judge.",
+    )
     return p.parse_args()
 
 
@@ -124,6 +142,8 @@ def run_eval(
     max_new_tokens: int,
     temperature: float,
     batch_size: int = 1,
+    save_visualizations: bool = False,
+    judge_mode: str = "strict",
 ) -> None:
     """Run evaluation on SpatialRGPT-Bench.
 
@@ -140,6 +160,8 @@ def run_eval(
         max_new_tokens: Max tokens per answer
         temperature: Sampling temperature
         batch_size: Batch size for processing (default: 1)
+        save_visualizations: Save bbox images and responses (default: False)
+        judge_mode: Judging mode - "strict", "lenient", or "official" (default: "strict")
     """
     # Load dataset
     print(f"Loading dataset from: {data_path}")
@@ -193,6 +215,13 @@ def run_eval(
     # Prepare output
     output_file = Path(output_path)
     output_file.parent.mkdir(parents=True, exist_ok=True)
+
+    # Create visualization directory if requested
+    viz_dir = None
+    if save_visualizations:
+        viz_dir = output_file.parent / "visualizations"
+        viz_dir.mkdir(parents=True, exist_ok=True)
+        print(f"Saving visualizations to: {viz_dir}")
 
     results = []
 
@@ -262,6 +291,9 @@ def run_eval(
                 # Error during generation
                 batch_predictions = [f"<ERROR: {e}>"] * len(batch_examples)
 
+            # Collect qa_types for judge (needed for official mode)
+            batch_qa_types = [ex["qa_type"] for ex in batch_examples]
+
             # Evaluate with Gemma-as-judge (batched if batch_size > 1)
             try:
                 if batch_size == 1:
@@ -272,6 +304,8 @@ def run_eval(
                             question=batch_questions[0],
                             prediction=batch_predictions[0],
                             ground_truth=batch_ground_truths[0],
+                            judge_mode=judge_mode,
+                            qa_type=batch_qa_types[0],
                         )
                     ]
                 else:
@@ -281,6 +315,8 @@ def run_eval(
                         question=batch_questions,
                         prediction=batch_predictions,
                         ground_truth=batch_ground_truths,
+                        judge_mode=judge_mode,
+                        qa_type=batch_qa_types,
                     )
             except Exception as e:
                 # Error during evaluation
@@ -294,7 +330,11 @@ def run_eval(
                 ] * len(batch_examples)
 
             # Save results for this batch
-            for ex, prediction, eval_result in zip(batch_examples, batch_predictions, batch_eval_results):
+            for idx_in_batch, (ex, prediction, eval_result) in enumerate(
+                zip(batch_examples, batch_predictions, batch_eval_results)
+            ):
+                sample_idx = batch_start + idx_in_batch
+
                 result = {
                     "id": ex["id"],
                     "question": ex["question"],
@@ -308,6 +348,44 @@ def run_eval(
                 }
                 results.append(result)
                 fout.write(json.dumps(result) + "\n")
+
+                # Save visualization if requested
+                if save_visualizations and viz_dir is not None:
+                    sample_dir = viz_dir / f"sample_{sample_idx:04d}_{ex['id']}"
+                    sample_dir.mkdir(parents=True, exist_ok=True)
+
+                    # Save image with bboxes
+                    if ex["image"] is not None:
+                        image_path = sample_dir / "image_with_bboxes.png"
+                        ex["image"].save(image_path)
+
+                    # Save response.txt
+                    response_path = sample_dir / "response.txt"
+                    with open(response_path, "w", encoding="utf-8") as rf:
+                        rf.write(f"Question: {ex['question']}\n\n")
+                        rf.write(f"Ground Truth: {ex['answer']}\n\n")
+                        rf.write(f"Gemma Prediction:\n{prediction}\n\n")
+                        rf.write(f"Judge Result: {'Correct' if eval_result['correct'] else 'Incorrect'}\n")
+                        rf.write(f"Judge Response: {eval_result['judge_response']}\n")
+
+                    # Save metadata.json
+                    metadata_path = sample_dir / "metadata.json"
+                    with open(metadata_path, "w", encoding="utf-8") as mf:
+                        metadata = {
+                            "id": ex["id"],
+                            "question": ex["question"],
+                            "ground_truth": ex["answer"],
+                            "prediction": prediction,
+                            "qa_type": ex["qa_type"],
+                            "qa_category": ex["qa_category"],
+                            "score": eval_result["score"],
+                            "correct": eval_result["correct"],
+                            "judge_response": eval_result["judge_response"],
+                        }
+                        # Add bbox coordinates if available
+                        if "metadata" in ex and "bbox" in ex["metadata"]:
+                            metadata["bounding_boxes"] = ex["metadata"]["bbox"]
+                        json.dump(metadata, mf, indent=2, ensure_ascii=False)
 
     print(f"\n✓ Saved results to {output_path}")
 
@@ -382,6 +460,15 @@ def run_eval(
 def main():
     """Main entry point."""
     args = parse_args()
+
+    # Determine judge mode from flags
+    if args.official_judge:
+        judge_mode = "official"
+    elif args.lenient_judge:
+        judge_mode = "lenient"
+    else:
+        judge_mode = "strict"
+
     run_eval(
         data_path=args.data_path,
         image_folder=args.image_folder,
@@ -395,6 +482,8 @@ def main():
         max_new_tokens=args.max_new_tokens,
         temperature=args.temperature,
         batch_size=args.batch_size,
+        save_visualizations=args.save_visualizations,
+        judge_mode=judge_mode,
     )
 
 

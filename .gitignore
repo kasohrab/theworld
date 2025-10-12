@@ -214,3 +214,4 @@ __marimo__/
 # Training checkpoints
 checkpoints/
 logs/
+outputs/
