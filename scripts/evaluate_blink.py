@@ -34,7 +34,7 @@ from sklearn.metrics import f1_score, confusion_matrix, classification_report
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from theworld import TheWorld, Gemma3Baseline
+from theworld import TheWorld
 from theworld.constants import DEFAULT_GEMMA_MODEL
 
 
@@ -255,7 +255,7 @@ def compute_metrics(
 
 def evaluate_task(
     task: str,
-    model: Union[TheWorld, Gemma3Baseline],
+    model: TheWorld,
     split: str = "test",
     num_samples: Optional[int] = None,
     max_new_tokens: int = 10,
@@ -393,21 +393,22 @@ def main():
     print(f"Model: {args.model}")
     print(f"Device: {args.device}")
 
-    # Detect model type
+    # Detect model type and load accordingly
     if args.model.lower() in ["gemma3-baseline", "gemma3", DEFAULT_GEMMA_MODEL]:
-        # Load Gemma baseline
+        # Load Gemma baseline (TheWorld without Cosmos)
         if args.model.lower() in ["gemma3-baseline", "gemma3"]:
             model_name = DEFAULT_GEMMA_MODEL
         else:
             model_name = args.model
 
-        model = Gemma3Baseline.from_pretrained(
-            model_name,
+        print(f"Loading Gemma baseline (TheWorld with load_cosmos=False)")
+        model = TheWorld(
+            gemma_model_name=model_name,
             device=args.device,
-            hf_token=hf_token,
+            load_cosmos=False,  # Gemma-only baseline mode
         )
     else:
-        # Load TheWorld model
+        # Load TheWorld model from Hub
         model = TheWorld.from_pretrained(
             args.model,
             device=args.device,

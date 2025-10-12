@@ -54,6 +54,9 @@ def format_prompt_with_choices(question: str, choices: Optional[list]) -> str:
         letter = chr(ord("A") + i)
         formatted += f"{letter}) {choice}\n"
 
+    # Add instruction to respond with just the letter
+    formatted += "\nRespond with only the letter (A, B, C, or D) of the correct answer."
+
     return formatted.strip()
 
 

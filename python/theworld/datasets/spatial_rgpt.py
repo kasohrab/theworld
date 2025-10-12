@@ -1,15 +1,19 @@
 """
 Spatial-RGPT evaluation dataset loader.
 
-Supports local JSONL files or HuggingFace dataset ids. Each example should contain at least:
+Supports local JSONL files or HuggingFace dataset ids. Each example should contain:
   - id: unique id
-  - image_path or image_url (or image field pointing to local path)
-  - question (str)
-  - choices (optional list[str])
-  - answer (optional ground truth)
+  - image_info: dict with 'file_path' (relative path from image_folder)
+  - text_q: text-only question (without special tokens)
+  - conversations: list of conversation turns with ground truth answer
+  - bbox: list of bounding boxes [[x1, y1, x2, y2], ...]
+  - rle: optional RLE-encoded masks
+  - qa_info: dict with 'type' (qualitative/quantitative) and 'category'
 
-This module provides a PyTorch/Dataset-compatible wrapper and a small downloader helper
-that mirrors the pattern used by DataCompDataset in datacomp.py.
+This module provides a PyTorch/Dataset-compatible wrapper that:
+  - Draws bounding boxes on images for visual grounding
+  - Extracts ground truth from conversations field
+  - Handles both bbox and RLE mask formats
 """
 
 from typing import Optional, Dict, Any, List
@@ -19,6 +23,8 @@ import time
 import requests
 from PIL import Image
 from torch.utils.data import Dataset as TorchDataset
+
+from .bbox_utils import draw_bounding_boxes, clamp_bbox
 
 
 def download_image(url: str, timeout: int = 5, max_retries: int = 3) -> Optional[Image.Image]:
@@ -32,7 +38,7 @@ def download_image(url: str, timeout: int = 5, max_retries: int = 3) -> Optional
         except Exception:
             if attempt == max_retries - 1:
                 return None
-            time.sleep(0.1 * (2 ** attempt))
+            time.sleep(0.1 * (2**attempt))
     return None
 
 
@@ -51,6 +57,8 @@ class SpatialRGPTDataset(TorchDataset):
         num_samples: Optional[int] = None,
         streaming: bool = False,
         image_key_candidates: Optional[List[str]] = None,
+        image_folder: Optional[str] = None,
+        draw_bboxes: bool = True,
     ):
         """Initialize dataset.
 
@@ -59,9 +67,13 @@ class SpatialRGPTDataset(TorchDataset):
             num_samples: limit samples (useful for testing)
             streaming: whether HF dataset is streaming
             image_key_candidates: preference list of image keys to look for
+            image_folder: Base folder for image paths (if images are relative paths)
+            draw_bboxes: Whether to draw bounding boxes on images (default: True)
         """
         self.num_samples = num_samples
         self.streaming = streaming
+        self.image_folder = Path(image_folder) if image_folder else None
+        self.draw_bboxes = draw_bboxes
 
         if image_key_candidates is None:
             self.image_key_candidates = ["image_path", "image_url", "image", "img"]
@@ -120,27 +132,123 @@ class SpatialRGPTDataset(TorchDataset):
         return None
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
+        import ast
+
         raw = self.items[idx]
 
-        image_field = self._get_image_field(raw)
+        # Load image
         pil_image = None
-        if image_field is not None:
-            val = raw[image_field]
-            if isinstance(val, str) and (val.startswith("http://") or val.startswith("https://")):
-                pil_image = download_image(val)
+
+        # First check if there's a direct image field (HuggingFace format)
+        if "image" in raw and raw["image"] is not None:
+            # HuggingFace dataset includes PIL image directly
+            if isinstance(raw["image"], Image.Image):
+                pil_image = raw["image"]
             else:
-                # treat as local path
+                # Might be a path or other format
                 try:
-                    pil_image = Image.open(val).convert("RGB")
+                    pil_image = Image.open(raw["image"]).convert("RGB")
                 except Exception:
                     pil_image = None
+
+        # Otherwise try image_info (JSONL format)
+        elif "image_info" in raw:
+            image_info = raw["image_info"]
+            # Parse if it's a string (HuggingFace serialization)
+            if isinstance(image_info, str):
+                try:
+                    image_info = ast.literal_eval(image_info)
+                except Exception:
+                    image_info = {}
+
+            if isinstance(image_info, dict) and "file_path" in image_info:
+                image_path = image_info["file_path"]
+                if self.image_folder:
+                    full_path = self.image_folder / image_path
+                else:
+                    full_path = Path(image_path)
+
+                try:
+                    pil_image = Image.open(full_path).convert("RGB")
+                except Exception:
+                    pil_image = None
+
+        # Fallback to original logic
+        if pil_image is None:
+            # Fallback to original logic
+            image_field = self._get_image_field(raw)
+            if image_field is not None:
+                val = raw[image_field]
+                if isinstance(val, str) and (val.startswith("http://") or val.startswith("https://")):
+                    pil_image = download_image(val)
+                else:
+                    try:
+                        pil_image = Image.open(val).convert("RGB")
+                    except Exception:
+                        pil_image = None
+
+        # Draw bounding boxes if requested and available
+        if self.draw_bboxes and pil_image is not None and "bbox" in raw:
+            bboxes = raw["bbox"]
+            # Parse if it's a string (HuggingFace serialization)
+            if isinstance(bboxes, str):
+                try:
+                    bboxes = ast.literal_eval(bboxes)
+                except Exception:
+                    bboxes = []
+
+            if bboxes and len(bboxes) > 0:
+                # Clamp bboxes to image boundaries
+                img_width, img_height = pil_image.size
+                clamped_bboxes = [clamp_bbox(bbox, img_width, img_height) for bbox in bboxes]
+
+                # Draw boxes with labels
+                labels = [f"Region [{i}]" for i in range(len(bboxes))]
+                pil_image = draw_bounding_boxes(pil_image, clamped_bboxes, labels=labels)
+
+        # Extract question (prefer text_q for SpatialRGPT-Bench)
+        question = raw.get("text_q") or raw.get("question") or raw.get("prompt") or ""
+
+        # Extract ground truth answer from conversations field
+        answer = None
+        if "conversations" in raw:
+            conversations = raw["conversations"]
+            # Parse if it's a string (HuggingFace serialization)
+            if isinstance(conversations, str):
+                try:
+                    conversations = ast.literal_eval(conversations)
+                except Exception:
+                    conversations = []
+
+            if len(conversations) >= 2:
+                # Answer is at index 1 (second turn)
+                answer = conversations[1].get("value", "")
+        else:
+            answer = raw.get("answer")
+
+        # Extract question type and category from qa_info
+        qa_type = None
+        qa_category = None
+        if "qa_info" in raw:
+            qa_info = raw["qa_info"]
+            # Parse if it's a string (HuggingFace serialization)
+            if isinstance(qa_info, str):
+                try:
+                    qa_info = ast.literal_eval(qa_info)
+                except Exception:
+                    qa_info = {}
+
+            if isinstance(qa_info, dict):
+                qa_type = qa_info.get("type")
+                qa_category = qa_info.get("category")
 
         return {
             "id": raw.get("id") or raw.get("example_id") or idx,
             "image": pil_image,
-            "question": raw.get("question") or raw.get("prompt") or "",
-            "choices": raw.get("choices"),
-            "answer": raw.get("answer"),
+            "question": question,
+            "choices": raw.get("choices"),  # Usually None for SpatialRGPT-Bench
+            "answer": answer,
+            "qa_type": qa_type,
+            "qa_category": qa_category,
             "metadata": raw,
         }
-
