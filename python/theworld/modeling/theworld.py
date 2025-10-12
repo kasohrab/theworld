@@ -884,58 +884,110 @@ class TheWorld(nn.Module):
 
     def _generate_gemma_only(
         self,
-        image: Union[Image.Image, np.ndarray, Tensor],
-        prompt: str,
+        image: Union[Image.Image, np.ndarray, Tensor, list],
+        prompt: Union[str, list],
         max_new_tokens: int = 50,
         temperature: float = 0.0,
         **kwargs: Union[str, int, float, bool],
-    ) -> str:
+    ) -> Union[str, list]:
         """
         Generate using only Gemma (no world model) - for ablation studies.
 
+        Supports both single and batch inputs implicitly.
+
         Args:
-            image: Input image (PIL, numpy, or tensor)
-            prompt: Text prompt/question
+            image: Input image (PIL, numpy, tensor) OR list of images for batch
+            prompt: Text prompt/question OR list of prompts for batch
             max_new_tokens: Maximum tokens to generate
             temperature: Sampling temperature (0 = greedy)
             **kwargs: Additional generation parameters
 
         Returns:
-            Generated text response (Gemma baseline)
+            Generated text response (single string) OR list of responses (if batch input)
+
+        Examples:
+            >>> # Single input
+            >>> response = model._generate_gemma_only(image, "What is this?")
+            >>>
+            >>> # Batch input
+            >>> responses = model._generate_gemma_only([img1, img2], ["Q1", "Q2"])
         """
 
-        pil_image = self._prepare_image(image)
+        # Detect if batch or single input
+        is_batch = isinstance(image, list) or isinstance(prompt, list)
 
-        # Format WITHOUT world bracket tokens
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image", "image": pil_image},
-                    {"type": "text", "text": prompt},
-                ],
-            }
-        ]
-
-        inputs = self.processor.apply_chat_template(
-            messages,
-            tokenize=True,
-            add_generation_prompt=True,
-            return_dict=True,  # Force dict output to get pixel_values
-            return_tensors="pt",
-        )
-
-        # Move to device and prepare for generate
-        # Note: apply_chat_template with return_dict=True returns BatchFeature (dict-like)
-        if isinstance(inputs, Tensor):
-            # Legacy path: just input_ids tensor (not used anymore with return_dict=True)
-            inputs = inputs.to(self.gemma.device)
-            input_ids = inputs
-            inputs = {"input_ids": input_ids}
+        if not is_batch:
+            # Wrap single items in lists for uniform processing
+            images = [image]
+            prompts = [prompt]
         else:
-            # Dict-like (dict or BatchFeature): contains input_ids, pixel_values, etc.
-            inputs = {k: v.to(self.gemma.device) if hasattr(v, "to") else v for k, v in inputs.items()}
-            input_ids = inputs["input_ids"]
+            # Handle mixed single/batch inputs
+            images = image if isinstance(image, list) else [image] * len(prompt)
+            prompts = prompt if isinstance(prompt, list) else [prompt] * len(image)
+
+        # Prepare images
+        pil_images = [self._prepare_image(img) for img in images]
+
+        # Process each sample individually (processor doesn't support batched images properly)
+        # Then manually batch the tensors
+        all_input_ids = []
+        all_attention_masks = []
+        all_pixel_values = []
+
+        for pil_img, p in zip(pil_images, prompts):
+            # Format WITHOUT world bracket tokens - single conversation
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image", "image": pil_img},
+                        {"type": "text", "text": p},
+                    ],
+                }
+            ]
+
+            # Process single conversation
+            sample_inputs = self.processor.apply_chat_template(
+                messages,
+                tokenize=True,
+                add_generation_prompt=True,
+                return_dict=True,
+                return_tensors="pt",
+            )
+
+            all_input_ids.append(sample_inputs["input_ids"])
+            all_attention_masks.append(sample_inputs["attention_mask"])
+            all_pixel_values.append(sample_inputs["pixel_values"])
+
+        # Manual batching with padding
+        import torch
+
+        # Pad input_ids and attention_mask to max length
+        # Use LEFT padding for decoder-only models (prepend padding tokens)
+        max_len = max(ids.shape[1] for ids in all_input_ids)
+        pad_token_id = self.processor.tokenizer.pad_token_id
+
+        batched_input_ids = []
+        batched_attention_masks = []
+        for ids, mask in zip(all_input_ids, all_attention_masks):
+            pad_len = max_len - ids.shape[1]
+            if pad_len > 0:
+                # Left-pad: prepend padding to the beginning
+                ids = torch.cat([torch.full((1, pad_len), pad_token_id, dtype=ids.dtype), ids], dim=1)
+                mask = torch.cat([torch.zeros((1, pad_len), dtype=mask.dtype), mask], dim=1)
+            batched_input_ids.append(ids)
+            batched_attention_masks.append(mask)
+
+        # Stack into batches
+        inputs = {
+            "input_ids": torch.cat(batched_input_ids, dim=0),
+            "attention_mask": torch.cat(batched_attention_masks, dim=0),
+            "pixel_values": torch.cat(all_pixel_values, dim=0),
+        }
+
+        # Move to device
+        inputs = {k: v.to(self.gemma.device) if hasattr(v, "to") else v for k, v in inputs.items()}
+        input_ids = inputs["input_ids"]
 
         # Generate using Gemma only
         with torch.no_grad():
@@ -949,44 +1001,55 @@ class TheWorld(nn.Module):
                 **kwargs,
             )
 
-        # Decode
+        # Decode all responses
         input_len = input_ids.shape[1]
+        batch_size = outputs.shape[0]
 
-        generated_ids = outputs[:, input_len:]
-        response = self.processor.decode(generated_ids[0], skip_special_tokens=True)
+        responses = []
+        for i in range(batch_size):
+            generated_ids = outputs[i, input_len:]
+            response = self.processor.decode(generated_ids, skip_special_tokens=True)
+            responses.append(response.strip())
 
-        return response.strip()
+        # Return single string or list based on input
+        return responses[0] if not is_batch else responses
 
     def generate(
         self,
-        image: Union[Image.Image, np.ndarray, Tensor],
-        prompt: str,
+        image: Union[Image.Image, np.ndarray, Tensor, list],
+        prompt: Union[str, list],
         max_new_tokens: int = 50,
         temperature: float = 0.0,
         skip_world_tokens: bool = False,
         **kwargs: Union[str, int, float, bool],
-    ) -> str:
+    ) -> Union[str, list]:
         """
         Generate text response for image and prompt.
+
+        Supports both single and batch inputs implicitly.
 
         This method routes to either:
         - World-aware generation (uses world embeddings via KV cache) [DEFAULT]
         - Gemma-only baseline (ablation mode, skip_world_tokens=True)
 
         Args:
-            image: Input image (PIL, numpy, or tensor)
-            prompt: Text prompt/question
+            image: Input image (PIL, numpy, tensor) OR list of images for batch
+            prompt: Text prompt/question OR list of prompts for batch
             max_new_tokens: Maximum tokens to generate
             temperature: Sampling temperature (0 = greedy)
             skip_world_tokens: If True, use Gemma baseline without world model (ablation mode)
             **kwargs: Additional generation parameters (top_k, top_p, etc.)
 
         Returns:
-            Generated text response
+            Generated text response (single string) OR list of responses (if batch input)
 
-        Example:
+        Examples:
             >>> model = TheWorld("google/gemma-3-4b-it")
-            >>> response = model.generate(image, "What is in this image?")  # Uses world model
+            >>> # Single input
+            >>> response = model.generate(image, "What is in this image?")
+            >>>
+            >>> # Batch input
+            >>> responses = model.generate([img1, img2], ["Q1", "Q2"])
             >>> baseline = model.generate(image, "What is in this image?", skip_world_tokens=True)  # Ablation
         """
 

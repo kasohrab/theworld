@@ -13,12 +13,58 @@ Our evaluation approach uses **Gemma-as-judge**: instead of expensive GPT-4 API 
 - ✅ **Fast** (same model already loaded)
 - ✅ **Self-contained** (no external dependencies)
 
+## Setup
+
+This project uses **uv** for fast, reliable Python package management.
+
+### Install uv (if not already installed)
+
+```bash
+# Install uv (one-time setup)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+### Install Dependencies
+
+```bash
+# Install project dependencies
+uv sync
+
+# Or with dev tools (optional)
+uv sync --dev
+```
+
+**What is uv?**
+- **Fast**: 10-100x faster than pip
+- **Reliable**: Lockfile ensures reproducible installs
+- **Simple**: `uv run` automatically manages virtual environments
+- **Modern**: Built in Rust, handles dependency resolution efficiently
+
+**Alternative (without uv):**
+If you prefer not to use `uv`, you can set `PYTHONPATH` manually:
+```bash
+export PYTHONPATH=python:$PYTHONPATH
+python scripts/eval_spatial_rgpt.py ...
+```
+
 ## Quick Start
+
+**Note:** All commands use `uv run` for dependency management. If you haven't set up `uv`, see the [Setup section](#setup) below.
 
 ### 1. Run Evaluation (10 samples)
 
 ```bash
-python scripts/eval_spatial_rgpt.py \
+# Using uv (recommended)
+uv run python scripts/eval_spatial_rgpt.py \
+    --data-path a8cheng/SpatialRGPT-Bench \
+    --image-folder "" \
+    --model google/gemma-3-4b-it \
+    --output outputs/spatial_rgpt_baseline_10.jsonl \
+    --max-samples 10 \
+    --draw-bboxes
+
+# Or set PYTHONPATH manually
+PYTHONPATH=python:$PYTHONPATH python scripts/eval_spatial_rgpt.py \
     --data-path a8cheng/SpatialRGPT-Bench \
     --image-folder "" \
     --model google/gemma-3-4b-it \
@@ -60,11 +106,11 @@ By Category:
 ============================================================
 ```
 
-### 2. Run Full Evaluation (1,406 samples)
+### 2. Run Full Evaluation (1,406 samples) - WITHOUT Batching
 
 ```bash
-# Remove --max-samples to evaluate all samples
-python scripts/eval_spatial_rgpt.py \
+# Evaluate all samples without batching (slow, ~2 hours)
+uv run python scripts/eval_spatial_rgpt.py \
     --data-path a8cheng/SpatialRGPT-Bench \
     --image-folder "" \
     --model google/gemma-3-4b-it \
@@ -72,7 +118,40 @@ python scripts/eval_spatial_rgpt.py \
     --draw-bboxes
 ```
 
-**Time estimate:** ~2 hours on single GPU (4.8s per sample)
+**Time estimate:** ~2 hours on single GPU (4.8s per sample without batching)
+
+**⚠️ Warning:** This is the slow approach. Use batching instead (see below).
+
+### 3. Run Full Evaluation with Batching (Recommended - **30x Faster!**)
+
+```bash
+# Use batching for ~30x speedup (RECOMMENDED)
+uv run python scripts/eval_spatial_rgpt.py \
+    --data-path a8cheng/SpatialRGPT-Bench \
+    --image-folder "" \
+    --model google/gemma-3-4b-it \
+    --output outputs/spatial_rgpt_baseline_full_batched.jsonl \
+    --batch-size 64 \
+    --draw-bboxes
+```
+
+**Time estimate:** ~3-4 minutes on single GPU (with batch size 64)
+
+**Batching benefits:**
+- **30x faster** evaluation (1.9 hours → 3-4 minutes!)
+- Processes multiple samples in parallel through the model
+- Uses manual batching: processes each image individually through Gemma3 processor, then concatenates tensors
+- Adjust `--batch-size` based on GPU memory:
+  - 64: For 80GB GPUs (recommended)
+  - 32: For 40GB GPUs
+  - 16: For 24GB GPUs
+  - 8: For 16GB GPUs
+
+**How batching works:**
+1. Gemma3 processor automatically resizes all images to 896x896 (fixed resolution)
+2. Each image-question pair is processed individually to get uniform tensors
+3. Tensors are manually concatenated into batches
+4. Model processes entire batch at once for maximum efficiency
 
 ## Command-Line Arguments
 
@@ -101,6 +180,7 @@ python scripts/eval_spatial_rgpt.py \
 | `--draw-bboxes` | `True` | Draw bounding boxes on images |
 | `--max-new-tokens` | `128` | Max tokens per answer |
 | `--temperature` | `0.0` | Sampling temperature (0.0 = greedy) |
+| `--batch-size` | `1` | Batch size for evaluation (higher = faster, more memory) |
 
 ## Evaluation Modes
 
@@ -109,11 +189,12 @@ python scripts/eval_spatial_rgpt.py \
 Evaluates Gemma 3 without the world model:
 
 ```bash
-python scripts/eval_spatial_rgpt.py \
+uv run python scripts/eval_spatial_rgpt.py \
     --data-path a8cheng/SpatialRGPT-Bench \
     --image-folder "" \
     --model google/gemma-3-4b-it \
-    --output outputs/baseline.jsonl
+    --output outputs/baseline.jsonl \
+    --batch-size 64  # Use batching for speed!
 ```
 
 ### Mode 2: TheWorld (with Cosmos)
@@ -121,12 +202,13 @@ python scripts/eval_spatial_rgpt.py \
 Evaluates TheWorld with temporal world model:
 
 ```bash
-python scripts/eval_spatial_rgpt.py \
+uv run python scripts/eval_spatial_rgpt.py \
     --data-path a8cheng/SpatialRGPT-Bench \
     --image-folder "" \
     --model username/theworld-model \
     --load-cosmos \
     --num-world-steps 4 \
+    --batch-size 64 \
     --output outputs/theworld.jsonl
 ```
 
@@ -135,10 +217,11 @@ python scripts/eval_spatial_rgpt.py \
 Evaluate on a local dataset file:
 
 ```bash
-python scripts/eval_spatial_rgpt.py \
+uv run python scripts/eval_spatial_rgpt.py \
     --data-path /path/to/val_SpatialRGPT-Bench.jsonl \
     --image-folder /path/to/images \
     --model google/gemma-3-4b-it \
+    --batch-size 64 \
     --output outputs/local_eval.jsonl
 ```
 
@@ -311,21 +394,27 @@ print(f"Accuracy: {metrics['accuracy']:.2%}")
 ### Comparing Models
 
 ```bash
-# Baseline
-python scripts/eval_spatial_rgpt.py \
+# Baseline (with batching)
+uv run python scripts/eval_spatial_rgpt.py \
+    --data-path a8cheng/SpatialRGPT-Bench \
+    --image-folder "" \
     --model google/gemma-3-4b-it \
     --output outputs/baseline.jsonl \
+    --batch-size 64 \
     --max-samples 100
 
-# TheWorld
-python scripts/eval_spatial_rgpt.py \
+# TheWorld (with batching)
+uv run python scripts/eval_spatial_rgpt.py \
+    --data-path a8cheng/SpatialRGPT-Bench \
+    --image-folder "" \
     --model username/theworld-model \
     --load-cosmos \
+    --batch-size 64 \
     --output outputs/theworld.jsonl \
     --max-samples 100
 
-# Compare
-python -c "
+# Compare results
+uv run python -c "
 from theworld.evaluation import calculate_spatial_accuracy
 import json
 
@@ -370,15 +459,35 @@ Look at the `prediction` field. If it's an error, check model loading.
 
 ### Issue: Out of memory
 
-**Solution:** Use smaller batch size or reduce max samples:
+**Problem:** GPU runs out of memory during batched evaluation.
+
+**Solution:** Use smaller batch size based on your GPU memory:
 ```bash
---max-samples 50  # Evaluate in batches
+# For 80GB GPUs
+--batch-size 64
+
+# For 40GB GPUs
+--batch-size 32
+
+# For 24GB GPUs
+--batch-size 16
+
+# For 16GB GPUs
+--batch-size 8
 ```
 
 Or use CPU (slower but no memory issues):
 ```bash
---device cpu
+--device cpu --batch-size 4
 ```
+
+### Issue: Right-padding warning
+
+**Warning:** `A decoder-only architecture is being used, but right-padding was detected!`
+
+**Status:** This warning has been fixed in the latest version. The code now uses left-padding for decoder-only models (Gemma). If you see this warning, update to the latest version of the code.
+
+**Technical details:** Decoder-only models require left-padding (prepending padding tokens) rather than right-padding (appending padding tokens) for correct generation behavior.
 
 ## Dataset Information
 

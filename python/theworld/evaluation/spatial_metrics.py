@@ -7,7 +7,7 @@ alternative to expensive GPT-4-based evaluation.
 
 import re
 import torch
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Union
 from PIL import Image
 
 
@@ -82,24 +82,26 @@ def parse_yes_no_response(response: str) -> bool:
 
 def evaluate_with_gemma(
     model,
-    question: str,
-    prediction: str,
-    ground_truth: str,
+    question: Union[str, list],
+    prediction: Union[str, list],
+    ground_truth: Union[str, list],
     max_new_tokens: int = 10,
     temperature: float = 0.0,
-) -> Dict[str, Any]:
+) -> Union[Dict[str, Any], list]:
     """Evaluate a spatial reasoning answer using Gemma-as-judge.
+
+    Supports both single and batch inputs implicitly.
 
     Args:
         model: TheWorld model instance (or any model with generate method)
-        question: Original question
-        prediction: Model's predicted answer
-        ground_truth: Correct answer
+        question: Original question (str or list of str)
+        prediction: Model's predicted answer (str or list of str)
+        ground_truth: Correct answer (str or list of str)
         max_new_tokens: Max tokens for judge response (default: 10, just need "Yes"/"No")
         temperature: Sampling temperature (default: 0.0 for deterministic)
 
     Returns:
-        Dictionary with evaluation results:
+        Dictionary with evaluation results (single input) or list of dicts (batch input):
             - score: Float score (1.0 if correct, 0.0 if incorrect)
             - correct: Boolean
             - judge_response: Raw response from Gemma judge
@@ -108,6 +110,8 @@ def evaluate_with_gemma(
     Example:
         >>> from theworld import TheWorld
         >>> model = TheWorld("google/gemma-3-4b-it", load_cosmos=False)
+        >>>
+        >>> # Single input
         >>> result = evaluate_with_gemma(
         ...     model,
         ...     "What color is the car?",
@@ -116,16 +120,47 @@ def evaluate_with_gemma(
         ... )
         >>> result['correct']
         True
+        >>>
+        >>> # Batch input
+        >>> results = evaluate_with_gemma(
+        ...     model,
+        ...     ["Q1", "Q2"],
+        ...     ["Pred1", "Pred2"],
+        ...     ["GT1", "GT2"]
+        ... )
+        >>> len(results)
+        2
     """
-    # Create judge prompt
-    judge_prompt = create_judge_prompt(question, ground_truth, prediction)
+    # Detect if batch or single input
+    is_batch = isinstance(question, list) or isinstance(prediction, list) or isinstance(ground_truth, list)
 
-    # Generate judgment (text-only, no image needed for judging)
+    if not is_batch:
+        # Wrap single items in lists for uniform processing
+        questions = [question]
+        predictions = [prediction]
+        ground_truths = [ground_truth]
+    else:
+        # Handle mixed single/batch inputs
+        questions = question if isinstance(question, list) else [question] * max(
+            len(prediction) if isinstance(prediction, list) else 1,
+            len(ground_truth) if isinstance(ground_truth, list) else 1
+        )
+        predictions = prediction if isinstance(prediction, list) else [prediction] * len(questions)
+        ground_truths = ground_truth if isinstance(ground_truth, list) else [ground_truth] * len(questions)
+
+    # Create judge prompts for all samples
+    judge_prompts = [
+        create_judge_prompt(q, gt, pred)
+        for q, gt, pred in zip(questions, ground_truths, predictions)
+    ]
+
+    # Generate judgments (text-only, no image needed for judging)
     try:
-        # Use Gemma directly for text-only generation
+        # Use Gemma directly for text-only generation - processor handles padding
         inputs = model.processor(
-            text=judge_prompt,
+            text=judge_prompts,
             return_tensors="pt",
+            padding=True,
         )
         inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
@@ -136,32 +171,48 @@ def evaluate_with_gemma(
                 max_new_tokens=max_new_tokens,
                 temperature=temperature if temperature > 0 else None,
                 do_sample=temperature > 0,
+                pad_token_id=model.processor.tokenizer.pad_token_id,
+                eos_token_id=model.processor.tokenizer.eos_token_id,
             )
 
-        # Decode (skip input prompt)
+        # Decode all responses (skip input prompts)
         input_length = inputs["input_ids"].shape[1]
-        generated_ids = output_ids[:, input_length:]
-        judge_response = model.processor.decode(generated_ids[0], skip_special_tokens=True)
+        batch_size = output_ids.shape[0]
+
+        judge_responses = []
+        for i in range(batch_size):
+            generated_ids = output_ids[i, input_length:]
+            response = model.processor.decode(generated_ids, skip_special_tokens=True)
+            judge_responses.append(response.strip())
 
     except Exception as e:
-        # If generation fails, return error
-        return {
-            "score": 0.0,
-            "correct": False,
-            "judge_response": f"<ERROR: {e}>",
+        # If generation fails, return errors for all samples
+        error_results = [
+            {
+                "score": 0.0,
+                "correct": False,
+                "judge_response": f"<ERROR: {e}>",
+                "judge_prompt": prompt,
+            }
+            for prompt in judge_prompts
+        ]
+        return error_results[0] if not is_batch else error_results
+
+    # Parse Yes/No for all responses
+    results = []
+    for judge_response, judge_prompt in zip(judge_responses, judge_prompts):
+        correct = parse_yes_no_response(judge_response)
+        score = 1.0 if correct else 0.0
+
+        results.append({
+            "score": score,
+            "correct": correct,
+            "judge_response": judge_response,
             "judge_prompt": judge_prompt,
-        }
+        })
 
-    # Parse Yes/No
-    correct = parse_yes_no_response(judge_response)
-    score = 1.0 if correct else 0.0
-
-    return {
-        "score": score,
-        "correct": correct,
-        "judge_response": judge_response,
-        "judge_prompt": judge_prompt,
-    }
+    # Return single dict or list based on input
+    return results[0] if not is_batch else results
 
 
 def calculate_spatial_accuracy(results: list[Dict[str, Any]]) -> Dict[str, Any]:

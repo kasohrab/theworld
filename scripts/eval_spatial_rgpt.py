@@ -102,6 +102,12 @@ def parse_args():
         default=0.0,
         help="Sampling temperature (0.0 = greedy)",
     )
+    p.add_argument(
+        "--batch-size",
+        type=int,
+        default=1,
+        help="Batch size for evaluation (default: 1 for no batching)",
+    )
     return p.parse_args()
 
 
@@ -117,6 +123,7 @@ def run_eval(
     draw_bboxes: bool,
     max_new_tokens: int,
     temperature: float,
+    batch_size: int = 1,
 ) -> None:
     """Run evaluation on SpatialRGPT-Bench.
 
@@ -132,6 +139,7 @@ def run_eval(
         draw_bboxes: Whether to draw bounding boxes
         max_new_tokens: Max tokens per answer
         temperature: Sampling temperature
+        batch_size: Batch size for processing (default: 1)
     """
     # Load dataset
     print(f"Loading dataset from: {data_path}")
@@ -188,69 +196,118 @@ def run_eval(
 
     results = []
 
+    # Print batching info
+    if batch_size > 1:
+        print(f"Using batch size: {batch_size}")
+    else:
+        print("Processing samples one at a time (no batching)")
+
     with open(output_file, "w", encoding="utf-8") as fout:
-        for i in tqdm(range(len(ds)), desc="Evaluating"):
-            ex = ds[i]
-            img = ex["image"]
-            question = ex["question"]
-            ground_truth = ex["answer"]
-            qa_type = ex["qa_type"]
-            qa_category = ex["qa_category"]
+        # Process in batches
+        for batch_start in tqdm(range(0, len(ds), batch_size), desc="Evaluating"):
+            batch_end = min(batch_start + batch_size, len(ds))
+            batch_indices = range(batch_start, batch_end)
 
-            # Generate answer
+            # Collect batch data
+            batch_examples = [ds[i] for i in batch_indices]
+            batch_images = [ex["image"] for ex in batch_examples]
+            batch_questions = [ex["question"] for ex in batch_examples]
+            batch_ground_truths = [ex["answer"] for ex in batch_examples]
+
+            # Generate answers (batched if batch_size > 1)
             try:
-                if load_cosmos:
-                    # TheWorld mode with world model
-                    prediction = model.generate(
-                        image=img,
-                        prompt=question,
-                        max_new_tokens=max_new_tokens,
-                        temperature=temperature,
-                        skip_world_tokens=False,
-                        num_world_steps=num_world_steps,
-                    )
+                if batch_size == 1:
+                    # Single sample - return string
+                    if load_cosmos:
+                        batch_predictions = [
+                            model.generate(
+                                image=batch_images[0],
+                                prompt=batch_questions[0],
+                                max_new_tokens=max_new_tokens,
+                                temperature=temperature,
+                                skip_world_tokens=False,
+                                num_world_steps=num_world_steps,
+                            )
+                        ]
+                    else:
+                        batch_predictions = [
+                            model.generate(
+                                image=batch_images[0],
+                                prompt=batch_questions[0],
+                                max_new_tokens=max_new_tokens,
+                                temperature=temperature,
+                                skip_world_tokens=True,
+                            )
+                        ]
                 else:
-                    # Baseline mode (Gemma-only)
-                    prediction = model.generate(
-                        image=img,
-                        prompt=question,
-                        max_new_tokens=max_new_tokens,
-                        temperature=temperature,
-                        skip_world_tokens=True,
+                    # Batched processing - return list
+                    if load_cosmos:
+                        batch_predictions = model.generate(
+                            image=batch_images,
+                            prompt=batch_questions,
+                            max_new_tokens=max_new_tokens,
+                            temperature=temperature,
+                            skip_world_tokens=False,
+                            num_world_steps=num_world_steps,
+                        )
+                    else:
+                        batch_predictions = model.generate(
+                            image=batch_images,
+                            prompt=batch_questions,
+                            max_new_tokens=max_new_tokens,
+                            temperature=temperature,
+                            skip_world_tokens=True,
+                        )
+            except Exception as e:
+                # Error during generation
+                batch_predictions = [f"<ERROR: {e}>"] * len(batch_examples)
+
+            # Evaluate with Gemma-as-judge (batched if batch_size > 1)
+            try:
+                if batch_size == 1:
+                    # Single sample
+                    batch_eval_results = [
+                        evaluate_with_gemma(
+                            model,
+                            question=batch_questions[0],
+                            prediction=batch_predictions[0],
+                            ground_truth=batch_ground_truths[0],
+                        )
+                    ]
+                else:
+                    # Batched
+                    batch_eval_results = evaluate_with_gemma(
+                        model,
+                        question=batch_questions,
+                        prediction=batch_predictions,
+                        ground_truth=batch_ground_truths,
                     )
             except Exception as e:
-                prediction = f"<ERROR: {e}>"
+                # Error during evaluation
+                batch_eval_results = [
+                    {
+                        "score": 0.0,
+                        "correct": False,
+                        "judge_response": f"<ERROR: {e}>",
+                        "judge_prompt": "",
+                    }
+                ] * len(batch_examples)
 
-            # Evaluate with Gemma-as-judge
-            try:
-                eval_result = evaluate_with_gemma(
-                    model,
-                    question=question,
-                    prediction=prediction,
-                    ground_truth=ground_truth,
-                )
-            except Exception as e:
-                eval_result = {
-                    "score": 0.0,
-                    "correct": False,
-                    "judge_response": f"<ERROR: {e}>",
-                    "judge_prompt": "",
+            # Save results for this batch
+            for ex, prediction, eval_result in zip(batch_examples, batch_predictions, batch_eval_results):
+                result = {
+                    "id": ex["id"],
+                    "question": ex["question"],
+                    "ground_truth": ex["answer"],
+                    "prediction": prediction,
+                    "qa_type": ex["qa_type"],
+                    "qa_category": ex["qa_category"],
+                    "score": eval_result["score"],
+                    "correct": eval_result["correct"],
+                    "judge_response": eval_result["judge_response"],
                 }
-
-            # Save result
-            result = {
-                "id": ex["id"],
-                "question": question,
-                "ground_truth": ground_truth,
-                "prediction": prediction,
-                "qa_type": qa_type,
-                "qa_category": qa_category,
-                "score": eval_result["score"],
-                "correct": eval_result["correct"],
-                "judge_response": eval_result["judge_response"],
-            }
-            results.append(result)
-            fout.write(json.dumps(result) + "\n")
+                results.append(result)
+                fout.write(json.dumps(result) + "\n")
 
     print(f"\n✓ Saved results to {output_path}")
 
@@ -277,6 +334,50 @@ def run_eval(
 
     print("=" * 60)
 
+    # Save summary to file
+    summary_path = output_path.replace(".jsonl", "_summary.txt")
+    with open(summary_path, "w", encoding="utf-8") as f:
+        f.write("=" * 60 + "\n")
+        f.write("SPATIAL RGPT-BENCH EVALUATION RESULTS\n")
+        f.write("=" * 60 + "\n")
+        f.write(f"Model: {model_name}\n")
+        f.write(f"Batch Size: {batch_size}\n")
+        f.write(f"Load Cosmos: {load_cosmos}\n")
+        if load_cosmos:
+            f.write(f"World Steps: {num_world_steps}\n")
+        f.write(f"Results File: {output_path}\n")
+        f.write("\n")
+
+        f.write("=" * 60 + "\n")
+        f.write("OVERALL ACCURACY\n")
+        f.write("=" * 60 + "\n")
+        f.write(f"Total Samples: {metrics['total']}\n")
+        f.write(f"Correct: {metrics['correct']}\n")
+        f.write(f"Accuracy: {metrics['accuracy']:.4f} ({metrics['accuracy']*100:.2f}%)\n")
+        f.write("\n")
+
+        if metrics["by_type"]:
+            f.write("=" * 60 + "\n")
+            f.write("BY QUESTION TYPE\n")
+            f.write("=" * 60 + "\n")
+            for qa_type, acc in metrics["by_type"].items():
+                f.write(f"{qa_type}: {acc:.4f} ({acc*100:.2f}%)\n")
+            f.write("\n")
+
+        if metrics["by_category"]:
+            f.write("=" * 60 + "\n")
+            f.write("BY CATEGORY (DETAILED BREAKDOWN)\n")
+            f.write("=" * 60 + "\n")
+            # Sort by accuracy descending
+            sorted_categories = sorted(metrics["by_category"].items(), key=lambda x: x[1], reverse=True)
+            for qa_category, acc in sorted_categories:
+                f.write(f"{qa_category}: {acc:.4f} ({acc*100:.2f}%)\n")
+            f.write("\n")
+
+        f.write("=" * 60 + "\n")
+
+    print(f"✓ Saved summary to {summary_path}")
+
 
 def main():
     """Main entry point."""
@@ -293,6 +394,7 @@ def main():
         draw_bboxes=args.draw_bboxes,
         max_new_tokens=args.max_new_tokens,
         temperature=args.temperature,
+        batch_size=args.batch_size,
     )
 
 
