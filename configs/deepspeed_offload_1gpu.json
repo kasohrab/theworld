@@ -1,0 +1,39 @@
+{
+  "_comment": "DeepSpeed ZeRO-Offload configuration for 1 GPU with CPU offloading",
+  "_use_case": "Full model training (all 6B params unfrozen) on 1x A100 40GB or 80GB",
+  "_memory_per_gpu": "26-27 GB GPU + 48 GB CPU RAM",
+  "_expected_speed": "~0.3x baseline (slow due to CPU-GPU transfers)",
+  "_warning": "Very slow - only use if single GPU is the only option",
+
+  "train_batch_size": "auto",
+  "train_micro_batch_size_per_gpu": "auto",
+  "gradient_accumulation_steps": "auto",
+  "gradient_clipping": "auto",
+
+  "bf16": {
+    "enabled": "auto"
+  },
+
+  "zero_optimization": {
+    "stage": 3,
+    "offload_optimizer": {
+      "device": "cpu",
+      "pin_memory": true
+    },
+    "offload_param": {
+      "device": "cpu",
+      "pin_memory": true
+    },
+    "overlap_comm": true,
+    "contiguous_gradients": true,
+    "reduce_bucket_size": 5e8,
+    "stage3_prefetch_bucket_size": 5e8,
+    "stage3_param_persistence_threshold": 1e6
+  },
+
+  "activation_checkpointing": {
+    "partition_activations": true,
+    "cpu_checkpointing": true,
+    "contiguous_memory_optimization": true
+  }
+}

@@ -49,7 +49,5 @@
   "push_to_hub": false,
   "hub_model_id": null,
   "hub_strategy": "every_save",
-  "hub_private_repo": false,
-
-  "device": "cuda"
+  "hub_private_repo": false
 }

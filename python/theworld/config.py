@@ -32,6 +32,8 @@ class TrainingConfig:
     Memory Optimization:
         use_gradient_checkpointing: Enable gradient checkpointing to save memory
         mixed_precision: Mixed precision training ("no", "fp16", "bf16")
+        deepspeed_config: Path to DeepSpeed configuration JSON file (None = disabled)
+        save_safetensors: Save checkpoints in safetensors format (faster, safer)
 
     Checkpointing:
         output_dir: Directory to save checkpoints
@@ -77,7 +79,6 @@ class TrainingConfig:
     freeze_gemma_vision: bool = True
     freeze_gemma_language: bool = True
     freeze_cosmos_vae: bool = True
-    load_full_cosmos_pipeline: bool = True  # If False, load only VAE (saves memory)
 
     # Training hyperparameters
     learning_rate: float = 1e-4
@@ -92,6 +93,8 @@ class TrainingConfig:
     # Memory optimization
     use_gradient_checkpointing: bool = False
     mixed_precision: str = "bf16"  # "no", "fp16", "bf16"
+    deepspeed_config: Optional[str] = None  # Path to DeepSpeed JSON (None = disabled)
+    save_safetensors: bool = True  # Save checkpoints in safetensors format (faster loading)
 
     # Checkpointing
     output_dir: str = "./checkpoints"
@@ -116,10 +119,11 @@ class TrainingConfig:
     num_workers: int = 4
     train_dataset_path: Optional[str] = None
     eval_dataset_path: Optional[str] = None
-    dataset_name: str = "custom"  # "datacomp", "custom", etc.
+    dataset_name: str = "custom"  # "datacomp", "vsr", "custom", etc.
     num_samples: Optional[int] = None  # Limit to N samples (None = all)
     streaming: bool = False  # Use streaming mode for large datasets
     question_template: str = "Describe this image in detail."
+    image_folder: Optional[str] = None  # Path to image folder (for datasets like VSR)
 
     # HuggingFace
     hf_token: Optional[str] = None  # HF API token
@@ -127,9 +131,6 @@ class TrainingConfig:
     hub_model_id: Optional[str] = None  # e.g., "username/theworld-datacomp"
     hub_strategy: str = "every_save"  # "end", "every_save", "checkpoint"
     hub_private_repo: bool = False  # Create private repository
-
-    # Device
-    device: str = "cuda"
 
     def __post_init__(self):
         """Validate configuration after initialization."""

@@ -1,0 +1,64 @@
+{
+  "_comment": "Training configuration for Visual Spatial Reasoning (VSR) dataset with world embeddings",
+
+  "model_name": "google/gemma-3-4b-it",
+  "cosmos_model_name": "nvidia/Cosmos-Predict2-2B-Video2World",
+  "num_world_steps": 0,
+  "max_world_steps": 16,
+  "freeze_gemma_vision": true,
+  "freeze_gemma_language": true,
+  "freeze_cosmos_vae": true,
+
+  "learning_rate": 0.0001,
+  "batch_size": 4,
+  "gradient_accumulation_steps": 1,
+  "num_epochs": 1,
+  "warmup_steps": 100,
+  "weight_decay": 0.01,
+  "max_grad_norm": 1.0,
+
+  "use_gradient_checkpointing": true,
+  "mixed_precision": "bf16",
+
+  "output_dir": "./checkpoints/theworld-vsr",
+  "save_steps": 250,
+  "save_total_limit": 100,
+  "resume_from_checkpoint": "./checkpoints/theworld-vsr/checkpoint-500",
+
+  "eval_steps": 500,
+  "eval_batch_size": 8,
+  "do_eval": false,
+
+  "logging_steps": 50,
+  "log_to_wandb": false,
+  "wandb_project": "TheWorld",
+  "wandb_run_name": "vsr-projection-world-enabled",
+  "log_to_tensorboard": true,
+
+  "max_seq_length": 2048,
+  "num_workers": 4,
+  "train_dataset_path": null,
+  "eval_dataset_path": null,
+  "dataset_name": "vsr",
+  "num_samples": null,
+  "streaming": false,
+  "question_template": "Statement: {caption}\nAnswer (only '0' or '1'):",
+  "image_folder": "/home/hice1/ksohrab3/scratch/theworld/data/images",
+
+  "_dataset_info": [
+    "VSR (Visual Spatial Reasoning) dataset evaluates spatial understanding",
+    "Binary classification task: Model outputs single token (0 or 1)",
+    "Label 0 = False statement, Label 1 = True statement",
+    "Train split: ~8,777 samples",
+    "Validation split: ~1,098 samples",
+    "Test split: ~1,097 samples",
+    "Images are stored locally and referenced by filename",
+    "Question format matches evaluation script for consistency"
+  ],
+
+  "hf_token": null,
+  "push_to_hub": true,
+  "hub_model_id": "kasohrab/theworld-vsr",
+  "hub_strategy": "every_save",
+  "hub_private_repo": true
+}

@@ -10,7 +10,6 @@
   "freeze_gemma_vision": true,
   "freeze_gemma_language": true,
   "freeze_cosmos_vae": true,
-  "load_full_cosmos_pipeline": true,
 
   "learning_rate": 0.0001,
   "batch_size": 1,
@@ -53,8 +52,6 @@
   "hub_model_id": "kasohrab/theworld-smoke-test",
   "hub_strategy": "every_save",
   "hub_private_repo": true,
-
-  "device": "cuda",
 
   "_note_num_samples": "Just 2 samples to test pipeline quickly",
   "_note_save_steps": "Save after each step to verify checkpointing works",

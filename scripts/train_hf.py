@@ -114,6 +114,7 @@ def load_datasets(config: TrainingConfig):
 
     Supports:
     - DataComp-1B (dataset_name="datacomp")
+    - VSR (dataset_name="vsr")
     - Custom datasets (dataset_name="custom")
 
     Args:
@@ -122,7 +123,7 @@ def load_datasets(config: TrainingConfig):
     Returns:
         Tuple of (train_dataset, eval_dataset)
     """
-    from theworld.datasets import load_datacomp
+    from theworld.datasets import load_datacomp, load_vsr
 
     # Authenticate with HuggingFace if token provided
     if config.hf_token:
@@ -159,6 +160,36 @@ def load_datasets(config: TrainingConfig):
                 hf_token=config.hf_token,
             )
 
+    elif config.dataset_name == "vsr":
+        print(f"Loading VSR dataset...")
+        print(f"  Samples: {config.num_samples if config.num_samples else 'all (~10K)'}")
+
+        # Get image folder from config (or use default)
+        image_folder = getattr(config, "image_folder", None)
+        if image_folder is None:
+            image_folder = "/home/hice1/ksohrab3/scratch/theworld/data/images"
+
+        train_dataset = load_vsr(
+            split="train",
+            variant="random",
+            image_folder=image_folder,
+            num_samples=config.num_samples,
+            question_template=config.question_template,
+            hf_token=config.hf_token,
+        )
+
+        # Load validation split for evaluation
+        eval_dataset = None
+        if config.do_eval:
+            eval_dataset = load_vsr(
+                split="validation",
+                variant="random",
+                image_folder=image_folder,
+                num_samples=None,  # Use full validation set
+                question_template=config.question_template,
+                hf_token=config.hf_token,
+            )
+
     elif config.dataset_name == "custom":
         # Custom dataset loading
         # Users can modify this section for their own datasets
@@ -177,7 +208,7 @@ def load_datasets(config: TrainingConfig):
             eval_dataset = TheWorldDataset(eval_data)
 
     else:
-        raise ValueError(f"Unknown dataset_name: {config.dataset_name}. " f"Supported: 'datacomp', 'custom'")
+        raise ValueError(f"Unknown dataset_name: {config.dataset_name}. " f"Supported: 'datacomp', 'vsr', 'custom'")
 
     return train_dataset, eval_dataset
 
@@ -282,17 +313,46 @@ def main():
     print(f"  Epochs: {config.num_epochs}")
     print(f"  Gradient checkpointing: {config.use_gradient_checkpointing}")
     print(f"  Mixed precision: {config.mixed_precision}")
+    print(f"  Save format: {'safetensors' if config.save_safetensors else 'pickle'}")
+    if config.deepspeed_config:
+        print(f"  DeepSpeed config: {config.deepspeed_config}")
 
     # Initialize model
     print(f"\nInitializing model...")
-    model = TheWorld(
+    print(f"  Using from_pretrained() for proper initialization...")
+    print(f"  World embeddings: enabled")
+    print(f"  Cosmos model: {config.cosmos_model_name}")
+    print(f"  num_world_steps: {config.num_world_steps}")
+
+    # Detect distributed training mode (DDP, DeepSpeed, etc.)
+    # device_map="auto" is incompatible with ANY distributed training
+    is_distributed = (
+        args.local_rank != -1  # torchrun/DDP sets this
+        or config.deepspeed_config is not None  # DeepSpeed
+        or os.environ.get("WORLD_SIZE", "1") != "1"  # Alternative check
+    )
+
+    use_device_map = None if is_distributed else "auto"
+    if is_distributed:
+        if config.deepspeed_config:
+            print(f"  Distributed mode: DeepSpeed ZeRO")
+        else:
+            print(f"  Distributed mode: DDP (torchrun)")
+        print(f"  ⚠ Letting distributed framework handle device placement (device_map=None)")
+    else:
+        print(f"  Single GPU mode: device_map='auto'")
+
+    # Use from_pretrained() instead of constructor for proper weight loading
+    # Note: num_world_steps is an inference parameter, not an initialization parameter
+    model = TheWorld.from_pretrained(
         config.model_name,
+        enable_world=True,
         cosmos_model_name=config.cosmos_model_name,
-        device=config.device,
         freeze_gemma_vision=config.freeze_gemma_vision,
         freeze_gemma_language=config.freeze_gemma_language,
         freeze_cosmos_vae=config.freeze_cosmos_vae,
-        load_full_cosmos_pipeline=config.load_full_cosmos_pipeline,
+        dtype=torch.bfloat16 if config.mixed_precision == "bf16" else torch.float32,
+        device_map=use_device_map,
     )
 
     # Enable gradient checkpointing if configured
@@ -356,10 +416,13 @@ def main():
         # Mixed precision
         fp16=fp16,
         bf16=bf16,
+        # DeepSpeed
+        deepspeed=config.deepspeed_config if config.deepspeed_config else None,
         # Checkpointing
         save_strategy="steps",
         save_steps=config.save_steps,
         save_total_limit=config.save_total_limit,
+        save_safetensors=config.save_safetensors,
         # Evaluation
         eval_strategy="steps" if config.do_eval else "no",
         eval_steps=config.eval_steps if config.do_eval else None,

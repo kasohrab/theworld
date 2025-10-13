@@ -172,7 +172,7 @@ def theworld_collate_fn(
         full_tokenized = processor.apply_chat_template(
             messages_full,
             tokenize=True,
-            add_generation_prompt=False, # The template adds assistant markers
+            add_generation_prompt=False,  # The template adds assistant markers
             return_dict=True,
             return_tensors="pt",
         )
@@ -207,19 +207,19 @@ def theworld_collate_fn(
     # Use the tokenizer's pad token ID
     pad_token_id = tokenizer.pad_token_id
     if pad_token_id is None:
-        pad_token_id = tokenizer.eos_token_id # Fallback if no pad token is set
+        pad_token_id = tokenizer.eos_token_id  # Fallback if no pad token is set
 
     # Pad input_ids and attention_mask
     input_ids_padded = torch.full((len(batch), max_len), pad_token_id, dtype=torch.long)
     attention_mask = torch.zeros((len(batch), max_len), dtype=torch.long)
     for i, ids in enumerate(input_ids_list):
-        input_ids_padded[i, :len(ids)] = ids
-        attention_mask[i, :len(ids)] = 1
+        input_ids_padded[i, : len(ids)] = ids
+        attention_mask[i, : len(ids)] = 1
 
     # Pad labels
     labels_padded = torch.full((len(batch), max_len), -100, dtype=torch.long)
     for i, label_ids in enumerate(labels_list):
-        labels_padded[i, :len(label_ids)] = label_ids
+        labels_padded[i, : len(label_ids)] = label_ids
 
     # Concatenate pixel values (should all have the same shape)
     pixel_values = torch.cat([pv for pv in pixel_values_list if pv is not None], dim=0)

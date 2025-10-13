@@ -220,3 +220,7 @@ checkpoints/
 logs/
 outputs/
 data/result_10_depth_convs.json
+data/images
+
+# misc
+wandb/

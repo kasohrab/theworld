@@ -3,7 +3,7 @@
 from .outputs import GemmaVisionOutput, FusionOutput
 from .cosmos_encoder import CosmosEncoder
 from .fusion import EmbeddingFusion
-from .theworld_refactored import TheWorld
+from .theworld import TheWorld
 
 __all__ = [
     "GemmaVisionOutput",

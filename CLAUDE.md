@@ -827,15 +827,44 @@ See [HuggingFace Hub Upload Guide](docs/huggingface_hub_upload.md) for detailed 
 
 HuggingFace Trainer automatically handles distributed training:
 
+**Standard Multi-GPU (DDP):**
 ```bash
-# Single GPU
-python scripts/train_hf.py
+# Single GPU (projection-only, <25GB)
+python scripts/train_hf.py --config configs/vsr_training.json
 
-# Multi-GPU (DDP)
-torchrun --nproc_per_node=4 scripts/train_hf.py
+# Multi-GPU DDP (data parallel, each GPU has full model)
+torchrun --nproc_per_node=4 scripts/train_hf.py --config configs/vsr_training.json
+```
 
-# Multi-node
-# See HuggingFace Accelerate documentation
+**DeepSpeed ZeRO (Model Sharding):**
+
+For training larger model portions (e.g., unfrozen language model), use DeepSpeed ZeRO to shard model state across GPUs:
+
+```bash
+# DeepSpeed with 4 GPUs (shards optimizer + gradients + parameters)
+deepspeed --num_gpus=4 scripts/train_hf.py --config configs/vsr_training_deepspeed.json
+
+# DeepSpeed with 2 GPUs
+deepspeed --num_gpus=2 scripts/train_hf.py --config configs/vsr_training_deepspeed.json
+
+# Single GPU with CPU offloading (slow but works)
+# Edit config: "deepspeed_config": "configs/deepspeed_offload_1gpu.json"
+deepspeed --num_gpus=1 scripts/train_hf.py --config configs/vsr_training_deepspeed.json
+```
+
+**Important Notes:**
+- **DO NOT use `torchrun`** with DeepSpeed configs - use the `deepspeed` launcher
+- **DO NOT use `python` directly** with DeepSpeed configs - DeepSpeed needs to initialize properly
+- DeepSpeed automatically handles device placement - don't use `device_map="auto"` in your config
+- See `docs/deepspeed_zero_analysis.md` for memory calculations and performance details
+
+**DeepSpeed vs DDP:**
+- **DDP**: Each GPU has full model copy. Good for small models, simple setup.
+- **DeepSpeed ZeRO**: Shards model across GPUs. Required for large models (>40GB/GPU). More complex but necessary.
+
+**Multi-node:**
+```bash
+# See HuggingFace Accelerate or DeepSpeed documentation
 ```
 
 ### Memory Optimization Strategies

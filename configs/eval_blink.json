@@ -3,7 +3,6 @@
   "_usage": "python scripts/evaluate_blink.py --model username/theworld-datacomp [options]",
 
   "model": "username/theworld-datacomp",
-  "device": "cuda",
 
   "tasks": ["Relative_Depth", "Spatial_Relation"],
   "split": "test",

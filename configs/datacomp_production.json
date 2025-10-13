@@ -50,8 +50,5 @@
   "push_to_hub": true,
   "hub_model_id": "kasohrab/theworld-datacomp-projection",
   "hub_strategy": "every_save",
-  "hub_private_repo": false,
-
-  "device": "cuda:1",
-  "load_full_cosmos_pipeline": true
+  "hub_private_repo": false
 }

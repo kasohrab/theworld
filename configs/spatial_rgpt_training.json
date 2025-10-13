@@ -60,7 +60,5 @@
   "push_to_hub": true,
   "hub_model_id": "your-username/theworld-spatial-rgpt",
   "hub_strategy": "every_save",
-  "hub_private_repo": false,
-
-  "device": "cuda"
+  "hub_private_repo": false
 }

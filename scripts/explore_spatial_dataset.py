@@ -12,6 +12,7 @@ print("  But it caches to ~/.cache/huggingface/datasets/")
 print("  So subsequent runs will be instant!")
 print()
 import datasets
+
 datasets.logging.set_verbosity(datasets.logging.INFO)
 
 # Load dataset in non-streaming mode (downloads everything)
@@ -50,6 +51,7 @@ for i in range(min(5, len(dataset))):
                 # Parse if it's a string
                 try:
                     import ast
+
                     value = ast.literal_eval(value)
                 except:
                     pass
@@ -59,7 +61,7 @@ for i in range(min(5, len(dataset))):
                     print(f"  Turn {j+1}:")
                     print(f"    from: {turn.get('from', 'N/A')}")
                     # Truncate long text
-                    text = turn.get('value', 'N/A')
+                    text = turn.get("value", "N/A")
                     if len(text) > 300:
                         text = text[:300] + "..."
                     print(f"    value: {text}")
