@@ -24,6 +24,8 @@ The model fuses three components:
 
 ### Token Flow Architecture
 
+**Note:** This is a high-level overview. For exact tensor shapes at each step, see [`docs/architecture/token-flow.md`](docs/architecture/token-flow.md).
+
 ```
 Input Image (PIL/tensor)
     ↓
@@ -241,6 +243,8 @@ model = TheWorld.from_pretrained(
 
 ## Key Implementation Details
 
+**⭐ NEW:** For a complete trace of tensor shapes through the architecture, see [`docs/architecture/token-flow.md`](docs/architecture/token-flow.md). This document shows exact dimensions at every step, from input images to output logits.
+
 ### Initialization Pattern
 
 **IMPORTANT**: TheWorld uses the standard HuggingFace initialization pattern:
@@ -266,7 +270,7 @@ model = TheWorld(config)  # Only for internal use
 
 The `__init__(config)` constructor only creates model structure and is called internally by `from_pretrained()`.
 
-See `docs/logit_validation_investigation.md` for detailed explanation.
+See `docs/architecture/implementation-notes.md` for detailed explanation.
 
 ### Input Format Compatibility
 
@@ -313,7 +317,7 @@ The Cosmos VAE encoder outputs 32 channels (split into 16 mean + 16 logvar). We 
 3. **Semantic**: The 16-dim space is where the world model truly lives (decoder trained on this)
 4. **Efficient**: 50% fewer parameters in projection layer (16→2304 vs 32→2304)
 
-See `docs/world_model_latent_space.md` for detailed comparison of three extraction options.
+See `docs/archive/world_model_latent_space.md` for detailed comparison of three extraction options.
 
 ### Autoregressive World Rollout
 
@@ -335,7 +339,7 @@ latents = output.frames  # (B, 16, T, H, W) where T=1+num_world_steps
 
 Temporal embeddings are added to distinguish between timesteps t=0 (current), t=1, t=2, etc.
 
-See `docs/autoregressive_world_rollout.md` for architecture details.
+See `docs/archive/autoregressive_world_rollout.md` for architecture details.
 
 ### Training Label Alignment
 
@@ -415,6 +419,9 @@ theworld/
 │       ├── test_gradient_flow.py     # Gradient flow debugging
 │       └── ...                       # Other validation/debugging scripts
 ├── docs/                               # Documentation
+│   ├── world_architecture_shapes.md  # Complete tensor shape reference (START HERE!)
+│   ├── architecture.md               # Architecture overview and design
+│   ├── cosmos_architecture_explained.md  # Cosmos VAE details (WanEncoder3d)
 │   ├── world_model_latent_space.md   # Cosmos latent extraction details
 │   ├── autoregressive_world_rollout.md  # Temporal prediction architecture
 │   ├── training_infrastructure_design.md  # Training design doc
@@ -625,7 +632,7 @@ Edit `configs/default.json` or create a new config file:
 - `model_name`: HuggingFace model ID for Gemma 3 (e.g., `google/gemma-3-4b-it`)
 - `cosmos_model_name`: HuggingFace model ID for Cosmos (e.g., `nvidia/Cosmos-Predict2-2B-Video2World`)
 - `dataset_name`: Dataset to use (`"datacomp"`, `"custom"`, etc.)
-- `push_to_hub`: Upload checkpoints to HuggingFace Hub (see [Hub Upload Guide](docs/huggingface_hub_upload.md))
+- `push_to_hub`: Upload checkpoints to HuggingFace Hub (see [Hub Upload Guide](docs/training/hub-upload.md))
 - `hub_model_id`: Repository name on Hub (e.g., `"username/theworld-datacomp"`)
 - `output_dir`: Local directory for checkpoints (default: `./checkpoints`)
 
@@ -717,7 +724,7 @@ train_dataset = SpatialRGPTDataset(
 - Compatible with standard TheWorld training pipeline
 
 **See also**:
-- `docs/eval/spatial_rgpt_bench.md` - Evaluation on SpatialRGPT-Bench
+- `docs/evaluation/benchmarks/spatial-rgpt.md` - Evaluation on SpatialRGPT-Bench
 - `configs/spatial_rgpt_training.json` - Training configuration
 
 ### Gradient Checkpointing
@@ -821,7 +828,7 @@ python scripts/train_hf.py --hf_token hf_your_token_here
 - Public or private repositories
 - Version control for checkpoints
 
-See [HuggingFace Hub Upload Guide](docs/huggingface_hub_upload.md) for detailed instructions.
+See [HuggingFace Hub Upload Guide](docs/training/hub-upload.md) for detailed instructions.
 
 ### Distributed Training
 
@@ -856,7 +863,7 @@ deepspeed --num_gpus=1 scripts/train_hf.py --config configs/vsr_training_deepspe
 - **DO NOT use `torchrun`** with DeepSpeed configs - use the `deepspeed` launcher
 - **DO NOT use `python` directly** with DeepSpeed configs - DeepSpeed needs to initialize properly
 - DeepSpeed automatically handles device placement - don't use `device_map="auto"` in your config
-- See `docs/deepspeed_zero_analysis.md` for memory calculations and performance details
+- See `docs/training/distributed.md` for memory calculations and performance details
 
 **DeepSpeed vs DDP:**
 - **DDP**: Each GPU has full model copy. Good for small models, simple setup.
@@ -876,7 +883,7 @@ deepspeed --num_gpus=1 scripts/train_hf.py --config configs/vsr_training_deepspe
 | **+ Vision + GradChkpt** | + `use_gradient_checkpointing=true` | 25-30GB | Slower |
 | **Full model** | All `false` + checkpointing | 56-60GB | Slow |
 
-For full model training beyond single GPU capacity, see `docs/deepspeed_zero_analysis.md` for DeepSpeed ZeRO strategies.
+For full model training beyond single GPU capacity, see `docs/training/distributed.md` for DeepSpeed ZeRO strategies.
 
 ## Architecture Notes
 
@@ -923,7 +930,7 @@ For domain-specific tasks, consider unfreezing components in this order:
 
 **Multi-stage training** allows you to progressively unfreeze components, starting fast and cheap with projection-only, then expanding only if needed. Each stage resumes from the previous checkpoint seamlessly.
 
-See [Multi-Stage Training Guide](docs/multi_stage_training.md) for detailed workflow, configuration examples, and best practices.
+See [Multi-Stage Training Guide](docs/training/multi-stage.md) for detailed workflow, configuration examples, and best practices.
 
 ### Known Limitations
 
@@ -935,7 +942,7 @@ See [Multi-Stage Training Guide](docs/multi_stage_training.md) for detailed work
 ### Known Issues
 
 **RetinaFace Gradient Bug** (Fixed with workaround):
-The `retinaface` library (a dependency of `cosmos_guardrail`) globally disables PyTorch gradients at import time (`torch.set_grad_enabled(False)` in `retinaface/inference_framework.py:4`). This would break all training, but `TheWorld.__init__` automatically re-enables gradients as a workaround. If you import Cosmos components directly, you must manually call `torch.set_grad_enabled(True)` after import. See [docs/retinaface_gradient_bug.md](docs/retinaface_gradient_bug.md) for detailed explanation.
+The `retinaface` library (a dependency of `cosmos_guardrail`) globally disables PyTorch gradients at import time (`torch.set_grad_enabled(False)` in `retinaface/inference_framework.py:4`). This would break all training, but `TheWorld.__init__` automatically re-enables gradients as a workaround. If you import Cosmos components directly, you must manually call `torch.set_grad_enabled(True)` after import. See [docs/guides/troubleshooting.md](docs/guides/troubleshooting.md) for detailed explanation.
 
 **Memory Requirements** (80GB+ GPU):
 The full model (Gemma 3 4B + Cosmos 2B + projection) requires ~47GB at initialization and can exceed 80GB during training due to activation memory. For GPUs with <80GB:
@@ -954,7 +961,7 @@ The full model (Gemma 3 4B + Cosmos 2B + projection) requires ~47GB at initializ
 2. Random projection (tests if pretrained Cosmos helps)
 3. World token ablation (tests if world tokens contribute)
 
-See [Evaluation Guide](docs/evaluation.md) for quick start and [Loss Function Details](docs/loss_function_and_evaluation.md) for mathematical formulation.
+See [Evaluation Guide](docs/evaluation/overview.md) for quick start and mathematical formulation.
 
 ## Evaluation
 
@@ -984,7 +991,7 @@ python scripts/inference_demo.py \
   --task Relative_Depth
 ```
 
-See [Evaluation Guide](docs/evaluation.md) for:
+See [Evaluation Guide](docs/evaluation/overview.md) for:
 - Baseline comparisons (Gemma3, random projection, ablation)
 - BLINK benchmark details
 - Metrics interpretation
