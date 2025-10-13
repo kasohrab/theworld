@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 
 from datasets import load_dataset
+from PIL import Image
 from sklearn.metrics import f1_score, confusion_matrix, classification_report
 from tqdm import tqdm
 
@@ -38,6 +39,14 @@ from theworld.data import create_theworld_collator
 import torch
 
 
+# System instruction for binary visual entailment task
+BINARY_SYSTEM_INSTRUCTION = (
+    "You are a vision-language model that performs binary visual entailment.\n"
+    "Task: Look at the image and evaluate the statement.\n"
+    "Output exactly one digit with no extra text: 1 if the statement is true, 0 if the statement is false."
+)
+
+
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(description="Evaluate TheWorld on VSR dataset")
@@ -47,7 +56,12 @@ def parse_args():
         "--model",
         type=str,
         required=True,
-        help="Model path or HuggingFace Hub ID (e.g., kasohrab/theworld-vsr)",
+        help="Model path or HuggingFace Hub ID (e.g., kasohrab/theworld-vsr or google/gemma-3-4b-it)",
+    )
+    parser.add_argument(
+        "--baseline",
+        action="store_true",
+        help="Evaluate baseline Gemma without world model (enable_world=False)",
     )
     parser.add_argument(
         "--device",
@@ -131,17 +145,27 @@ def parse_args():
     return parser.parse_args()
 
 
-def format_question(caption: str) -> str:
+def format_question(pil_image: Image.Image, caption: str) -> List[Dict[str, Any]]:
     """
-    Format VSR caption as a question for the model.
+    Format VSR caption as chat messages for the model.
 
     Args:
+        pil_image: PIL Image object
         caption: Spatial reasoning statement (e.g., "The cat is left of the dog")
 
     Returns:
-        Formatted prompt string
+        List of message dicts with system and user roles (chat template format)
     """
-    return f"Statement: {caption}\nAnswer (only '0' or '1'):"
+    return [
+        {"role": "system", "content": [{"type": "text", "text": BINARY_SYSTEM_INSTRUCTION}]},
+        {
+            "role": "user",
+            "content": [
+                {"type": "image", "image": pil_image},
+                {"type": "text", "text": f"Statement: {caption}\nAnswer (only '1' or '0'):"},
+            ],
+        },
+    ]
 
 
 def parse_binary_output(generated_text: str) -> Tuple[Optional[int], str]:
@@ -420,15 +444,29 @@ def main():
     print(f"Model: {args.model}")
     print(f"Device: {args.device}")
 
-    # Check if model is from Hub or local path
-    if Path(args.model).exists():
-        # Local checkpoint
-        print(f"Loading from local checkpoint: {args.model}")
-        model = TheWorld.from_checkpoint(args.model, device=args.device)
+    if args.baseline:
+        # Baseline Gemma (no world model)
+        print("Mode: Baseline Gemma (enable_world=False)")
+        model = TheWorld.from_pretrained(
+            args.model,
+            enable_world=False,
+            device=args.device,
+            dtype=torch.bfloat16,
+            device_map="auto",
+            low_cpu_mem_usage=True,
+        )
     else:
-        # HuggingFace Hub
-        print(f"Loading from HuggingFace Hub: {args.model}")
-        model = TheWorld.from_checkpoint_hub(args.model, device=args.device, hf_token=hf_token)
+        # TheWorld checkpoint (with world model)
+        print("Mode: TheWorld (trained checkpoint)")
+        # Check if model is from Hub or local path
+        if Path(args.model).exists():
+            # Local checkpoint
+            print(f"Loading from local checkpoint: {args.model}")
+            model = TheWorld.from_checkpoint(args.model, device=args.device)
+        else:
+            # HuggingFace Hub
+            print(f"Loading from HuggingFace Hub: {args.model}")
+            model = TheWorld.from_checkpoint_hub(args.model, device=args.device, hf_token=hf_token)
 
     # Load dataset
     print(f"\n{'='*60}")
@@ -442,8 +480,9 @@ def main():
     # Run evaluations for each world step configuration
     all_results = {}
 
-    for num_world_steps in world_steps_list:
-        config_name = f"world_steps_{num_world_steps}"
+    if args.baseline:
+        # Baseline mode: single evaluation without world model
+        config_name = "baseline_gemma"
 
         print(f"\n{'#'*60}")
         print(f"Configuration: {config_name}")
@@ -456,12 +495,34 @@ def main():
             num_samples=args.num_samples,
             max_new_tokens=args.max_new_tokens,
             temperature=args.temperature,
-            num_world_steps=num_world_steps,
+            num_world_steps=0,  # No world steps for baseline
             save_errors=args.save_errors,
             verbose=args.verbose,
         )
 
         all_results[config_name] = metrics
+    else:
+        # TheWorld mode: evaluate for each world step configuration
+        for num_world_steps in world_steps_list:
+            config_name = f"world_steps_{num_world_steps}"
+
+            print(f"\n{'#'*60}")
+            print(f"Configuration: {config_name}")
+            print(f"{'#'*60}")
+
+            metrics = evaluate_vsr(
+                model=model,
+                dataset=dataset,
+                image_folder=args.image_folder,
+                num_samples=args.num_samples,
+                max_new_tokens=args.max_new_tokens,
+                temperature=args.temperature,
+                num_world_steps=num_world_steps,
+                save_errors=args.save_errors,
+                verbose=args.verbose,
+            )
+
+            all_results[config_name] = metrics
 
     # Compute summary
     summary = {

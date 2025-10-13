@@ -1,0 +1,66 @@
+{
+  "model": "google/gemma-3-4b-it",
+  "dataset": "cambridgeltl/vsr_random",
+  "config": {
+    "split": "test",
+    "num_samples": null,
+    "max_new_tokens": 4,
+    "temperature": 0.0,
+    "image_folder": "/home/hice1/ksohrab3/scratch/theworld/data/images"
+  },
+  "results": {
+    "baseline_gemma": {
+      "accuracy": 55.2619589977221,
+      "correct": 1213,
+      "total": 2195,
+      "f1_macro": 54.42761409746172,
+      "f1_weighted": 53.95847066869578,
+      "f1_per_class": {
+        "false_0": 60.59390048154093,
+        "true_1": 48.26132771338251
+      },
+      "confusion_matrix": [
+        [
+          755,
+          259
+        ],
+        [
+          723,
+          458
+        ]
+      ],
+      "classification_report": {
+        "False (0)": {
+          "precision": 0.5108254397834912,
+          "recall": 0.7445759368836292,
+          "f1-score": 0.6059390048154093,
+          "support": 1014.0
+        },
+        "True (1)": {
+          "precision": 0.6387726638772664,
+          "recall": 0.3878069432684166,
+          "f1-score": 0.48261327713382507,
+          "support": 1181.0
+        },
+        "accuracy": 0.5526195899772209,
+        "macro avg": {
+          "precision": 0.5747990518303787,
+          "recall": 0.5661914400760228,
+          "f1-score": 0.5442761409746172,
+          "support": 2195.0
+        },
+        "weighted avg": {
+          "precision": 0.5796662924735816,
+          "recall": 0.5526195899772209,
+          "f1-score": 0.5395847066869578,
+          "support": 2195.0
+        }
+      },
+      "unparsed_count": 921
+    }
+  },
+  "summary": {
+    "mean_accuracy": 55.2619589977221,
+    "configurations": 1
+  }
+}

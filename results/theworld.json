@@ -1,0 +1,66 @@
+{
+  "model": "kasohrab/theworld-vsr",
+  "dataset": "cambridgeltl/vsr_random",
+  "config": {
+    "split": "test",
+    "num_samples": null,
+    "max_new_tokens": 4,
+    "temperature": 0.0,
+    "image_folder": "/home/hice1/ksohrab3/scratch/theworld/data/images"
+  },
+  "results": {
+    "world_steps_0": {
+      "accuracy": 53.80410022779043,
+      "correct": 1181,
+      "total": 2195,
+      "f1_macro": 34.98222748815166,
+      "f1_weighted": 37.64374547927755,
+      "f1_per_class": {
+        "false_0": 0.0,
+        "true_1": 69.96445497630332
+      },
+      "confusion_matrix": [
+        [
+          0,
+          1014
+        ],
+        [
+          0,
+          1181
+        ]
+      ],
+      "classification_report": {
+        "False (0)": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1-score": 0.0,
+          "support": 1014.0
+        },
+        "True (1)": {
+          "precision": 0.5380410022779043,
+          "recall": 1.0,
+          "f1-score": 0.6996445497630331,
+          "support": 1181.0
+        },
+        "accuracy": 0.5380410022779043,
+        "macro avg": {
+          "precision": 0.26902050113895215,
+          "recall": 0.5,
+          "f1-score": 0.34982227488151657,
+          "support": 2195.0
+        },
+        "weighted avg": {
+          "precision": 0.2894881201322118,
+          "recall": 0.5380410022779043,
+          "f1-score": 0.37643745479277546,
+          "support": 2195.0
+        }
+      },
+      "unparsed_count": 0
+    }
+  },
+  "summary": {
+    "mean_accuracy": 53.80410022779043,
+    "configurations": 1
+  }
+}
