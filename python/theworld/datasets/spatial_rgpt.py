@@ -1,7 +1,7 @@
 """
-Spatial-RGPT evaluation dataset loader.
+Spatial-RGPT dataset loader for both evaluation and training.
 
-Supports local JSONL files or HuggingFace dataset ids. Each example should contain:
+**Evaluation format (SpatialRGPT-Bench):**
   - id: unique id
   - image_info: dict with 'file_path' (relative path from image_folder)
   - text_q: text-only question (without special tokens)
@@ -10,10 +10,16 @@ Supports local JSONL files or HuggingFace dataset ids. Each example should conta
   - rle: optional RLE-encoded masks
   - qa_info: dict with 'type' (qualitative/quantitative) and 'category'
 
+**Training format (OpenSpatialDataset):**
+  - filename: image filename (without extension, e.g., "img_001")
+  - conversations: list of conversation turns with spatial reasoning QA
+  - (no bbox field - regions are referenced in text as "Region [0]", "Region [1]", etc.)
+
 This module provides a PyTorch/Dataset-compatible wrapper that:
-  - Draws bounding boxes on images for visual grounding
+  - Supports both eval and training data formats
+  - Optionally draws bounding boxes on images for visual grounding (eval mode)
   - Extracts ground truth from conversations field
-  - Handles both bbox and RLE mask formats
+  - Compatible with TheWorld training pipeline
 """
 
 from typing import Optional, Dict, Any, List
@@ -43,12 +49,25 @@ def download_image(url: str, timeout: int = 5, max_retries: int = 3) -> Optional
 
 
 class SpatialRGPTDataset(TorchDataset):
-    """Dataset wrapper for Spatial-RGPT eval data.
+    """Dataset wrapper for Spatial-RGPT evaluation and training data.
+
+    Supports two data formats:
+      1. **Evaluation (SpatialRGPT-Bench)**: Has bbox, text_q, image_info fields
+      2. **Training (OpenSpatialDataset)**: Has filename, conversations only
 
     Accepts either:
-      - a HuggingFace dataset object (map style or streaming), or
-      - a list of dicts loaded from a JSONL
-    Each item returned is a dict with keys: id, image (PIL.Image), question, choices (optional), answer (optional), metadata
+      - a HuggingFace dataset object (map style or streaming)
+      - a list of dicts loaded from a JSON/JSONL file
+
+    Each item returned is a dict with keys:
+      - id: unique identifier
+      - image: PIL.Image (RGB)
+      - question: text question (string)
+      - answer: ground truth answer (string)
+      - choices: optional choices (usually None)
+      - qa_type: question type (qualitative/quantitative) for eval
+      - qa_category: category for eval
+      - metadata: full raw item dict
     """
 
     def __init__(
@@ -151,7 +170,26 @@ class SpatialRGPTDataset(TorchDataset):
                 except Exception:
                     pil_image = None
 
-        # Otherwise try image_info (JSONL format)
+        # Try filename field (training data format: OpenSpatialDataset)
+        elif "filename" in raw:
+            # Training data uses "filename" without extension
+            # e.g., "img_001" -> "img_001.jpg"
+            filename = raw["filename"]
+            # Try common image extensions
+            for ext in [".jpg", ".jpeg", ".png", ".webp"]:
+                if self.image_folder:
+                    full_path = self.image_folder / f"{filename}{ext}"
+                else:
+                    full_path = Path(f"{filename}{ext}")
+
+                try:
+                    if full_path.exists():
+                        pil_image = Image.open(full_path).convert("RGB")
+                        break
+                except Exception:
+                    continue
+
+        # Try image_info field (eval data format: SpatialRGPT-Bench)
         elif "image_info" in raw:
             image_info = raw["image_info"]
             # Parse if it's a string (HuggingFace serialization)

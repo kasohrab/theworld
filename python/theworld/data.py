@@ -137,133 +137,99 @@ def theworld_collate_fn(
     processor: "AutoProcessor",
     tokenizer: "AutoTokenizer",
     max_length: int = 2048,
-    sow_token_id: Optional[int] = None,  # Unused but kept for compatibility
-    eow_token_id: Optional[int] = None,  # Unused but kept for compatibility
-    num_world_tokens: int = 784,  # Default: 28x28 for single frame
 ) -> TheWorldBatch:
-    """Collate function for batching TheWorld inputs.
-
-    This function:
-    1. Formats chat template as text only (NO vision encoding - that happens in model)
-    2. Tokenizes text with image placeholders
-    3. Preprocesses images for SigLIP (resize/normalize only, no encoding)
-    4. Keeps raw PIL images for Cosmos
-
-    Args:
-        batch: List of dictionaries with 'image', 'text', 'label'
-        processor: Gemma processor (for image preprocessing and tokenization)
-        tokenizer: Gemma tokenizer (for text)
-        max_length: Maximum sequence length
-        sow_token_id: Token ID for <start_of_world> (unused, for compatibility)
-        eow_token_id: Token ID for <end_of_world> (unused, for compatibility)
-        num_world_tokens: Number of world tokens (unused, for compatibility)
-
-    Returns:
-        Dictionary with:
-            - input_ids: Token IDs for input
-            - attention_mask: Attention mask
-            - pixel_values: Preprocessed image tensors (for SigLIP, not encoded)
-            - images: Raw PIL images (for Cosmos)
-            - labels: Labels for loss computation
     """
-    # Extract and convert all images to RGB upfront (before ANY processing)
-    images = []
-    for item in batch:
-        img = item["image"]
-        # Convert any non-RGB image to RGB (handles L/grayscale, LA, P/palette, RGBA, etc.)
-        if isinstance(img, Image.Image) and img.mode != "RGB":
-            img = img.convert("RGB")
-        images.append(img)
+    Collate function for batching TheWorld inputs.
 
+    This function correctly prepares data for Causal LM fine-tuning by:
+    1. Creating the full conversation sequence (prompt + label).
+    2. Tokenizing the full sequence to get input_ids.
+    3. Creating a copy for the labels.
+    4. Masking out the prompt portion of the labels with -100.
+    5. Padding all tensors to the maximum length in the batch.
+    """
+    images = [item["image"].convert("RGB") if item["image"].mode != "RGB" else item["image"] for item in batch]
     texts = [item["text"] for item in batch]
-    labels_raw = [item.get("label", None) for item in batch]
+    labels_raw = [item.get("label") for item in batch]
 
-    # Use processor's chat template to properly format messages with image placeholders
-    # This ensures <start_of_image> and <end_of_image> tokens are correctly inserted
-    messages_batch = []
-    for i, (image, text) in enumerate(zip(images, texts)):
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "<start_of_world> <end_of_world>"},  # World token brackets
-                    {"type": "image", "image": image},  # Image placeholder (now guaranteed RGB)
-                    {"type": "text", "text": text},  # Question/prompt
-                ],
-            }
-        ]
-        messages_batch.append(messages)
-
-    # Apply chat template to get properly formatted input_ids with image tokens
-    # We process each item individually because apply_chat_template doesn't support batching
+    # We need to process each item to find the length of the prompt part,
+    # then the length of the full part, so we can mask the labels correctly.
     input_ids_list = []
-    attention_mask_list = []
-    pixel_values_list = []  # Extract pixel_values from apply_chat_template
-    for i, messages in enumerate(messages_batch):
-        formatted = processor.apply_chat_template(  # pyright: ignore[reportAttributeAccessIssue]
-            messages,
+    labels_list = []
+    pixel_values_list = []
+
+    for image, text, label in zip(images, texts, labels_raw):
+        # 1. Create the full conversation with correctly formatted content
+        messages_full = [
+            {"role": "user", "content": [{"type": "image", "image": image}, {"type": "text", "text": text}]},
+        ]
+        if label is not None:
+            # --- THIS IS THE FIX ---
+            messages_full.append({"role": "assistant", "content": [{"type": "text", "text": label}]})
+            # --------------------
+
+        # Tokenize the full conversation to get the combined input_ids
+        full_tokenized = processor.apply_chat_template(
+            messages_full,
             tokenize=True,
-            add_generation_prompt=False,  # We don't want assistant prefix yet
+            add_generation_prompt=False, # The template adds assistant markers
             return_dict=True,
             return_tensors="pt",
         )
-        input_ids_list.append(formatted["input_ids"])
-        attention_mask_list.append(formatted["attention_mask"])
+        full_ids = full_tokenized["input_ids"][0]
 
-        # Extract pixel_values from apply_chat_template (already preprocessed!)
-        if "pixel_values" in formatted:
-            pixel_values_list.append(formatted["pixel_values"])
-        else:
-            # Fallback: manual preprocessing if not present (shouldn't happen)
-            processed = processor.image_processor(images=images[i], return_tensors="pt")
-            pixel_values_list.append(processed["pixel_values"])
-
-    # Pad to same length
-    max_len = max(ids.size(1) for ids in input_ids_list)
-    input_ids = torch.zeros(len(input_ids_list), max_len, dtype=torch.long)
-    attention_mask = torch.zeros(len(attention_mask_list), max_len, dtype=torch.long)
-
-    for i, (ids, mask) in enumerate(zip(input_ids_list, attention_mask_list)):
-        input_ids[i, : ids.size(1)] = ids
-        attention_mask[i, : mask.size(1)] = mask
-
-    # Validate SOW/EOW tokens present (if sow_token_id and eow_token_id are provided)
-    if sow_token_id is not None and eow_token_id is not None:
-        for i in range(len(input_ids)):
-            ids_list = input_ids[i].tolist()
-            sow_count = ids_list.count(sow_token_id)
-            eow_count = ids_list.count(eow_token_id)
-            if sow_count != 1 or eow_count != 1:
-                print(
-                    f"[WARNING] Sample {i}: Expected 1 SOW and 1 EOW token, "
-                    f"found {sow_count} SOW and {eow_count} EOW"
-                )
-
-    # Concatenate pixel_values (already extracted from apply_chat_template above)
-    pixel_values = torch.cat(pixel_values_list, dim=0)
-
-    # Process labels if provided
-    labels = None
-    if any(label is not None for label in labels_raw):
-        # Tokenize labels
-        label_encodings = tokenizer(  # pyright: ignore[reportCallIssue] - AutoTokenizer is callable at runtime
-            [label if label is not None else "" for label in labels_raw],
-            padding=True,
-            truncation=True,
-            max_length=max_length,
+        # 2. Create and tokenize ONLY the prompt part to find its length
+        messages_prompt = [
+            {"role": "user", "content": [{"type": "image", "image": image}, {"type": "text", "text": text}]},
+        ]
+        # We add a generation prompt to ensure the template includes the assistant markers
+        # (e.g., <start_of_turn>model\n) so we know where the prompt ends.
+        prompt_tokenized = processor.apply_chat_template(
+            messages_prompt,
+            tokenize=True,
+            add_generation_prompt=True,
+            return_dict=True,
             return_tensors="pt",
         )
-        labels = label_encodings["input_ids"]
+        prompt_len = prompt_tokenized["input_ids"].shape[1]
 
-        # Replace padding token id with -100 (ignore index)
-        labels[labels == tokenizer.pad_token_id] = -100  # pyright: ignore[reportAttributeAccessIssue]
+        # 3. Create labels: a copy of the full IDs, but with the prompt masked out
+        current_labels = full_ids.clone()
+        current_labels[:prompt_len] = -100
+
+        input_ids_list.append(full_ids)
+        labels_list.append(current_labels)
+        pixel_values_list.append(full_tokenized.get("pixel_values"))
+
+    # 4. Pad everything to the max length of the batch
+    max_len = max(len(ids) for ids in input_ids_list)
+
+    # Use the tokenizer's pad token ID
+    pad_token_id = tokenizer.pad_token_id
+    if pad_token_id is None:
+        pad_token_id = tokenizer.eos_token_id # Fallback if no pad token is set
+
+    # Pad input_ids and attention_mask
+    input_ids_padded = torch.full((len(batch), max_len), pad_token_id, dtype=torch.long)
+    attention_mask = torch.zeros((len(batch), max_len), dtype=torch.long)
+    for i, ids in enumerate(input_ids_list):
+        input_ids_padded[i, :len(ids)] = ids
+        attention_mask[i, :len(ids)] = 1
+
+    # Pad labels
+    labels_padded = torch.full((len(batch), max_len), -100, dtype=torch.long)
+    for i, label_ids in enumerate(labels_list):
+        labels_padded[i, :len(label_ids)] = label_ids
+
+    # Concatenate pixel values (should all have the same shape)
+    pixel_values = torch.cat([pv for pv in pixel_values_list if pv is not None], dim=0)
 
     return {
-        "input_ids": input_ids,
+        "input_ids": input_ids_padded,
         "attention_mask": attention_mask,
         "pixel_values": pixel_values,
-        "labels": labels,
-        "images": images,  # Raw PIL images for Cosmos processing
+        "labels": labels_padded,
+        "images": images,
     }
 
 
@@ -287,21 +253,11 @@ def create_theworld_collator(model):
     """
 
     def collate_fn(batch):
-        # Estimate num_world_tokens for bracket placement
-        # Cosmos VAE produces variable spatial dimensions based on input size
-        # For 512x512 input: approximately 80x176 = 14,080 tokens
-        # This is an estimate - actual count determined at runtime during forward pass
-        # The brackets just reserve space; actual world tokens inserted during forward()
-        estimated_world_tokens = 14080  # Approximate for typical input sizes
-
         return theworld_collate_fn(
             batch,
             processor=model.processor,
             tokenizer=model.processor.tokenizer,
             max_length=2048,
-            sow_token_id=model.sow_token_id,
-            eow_token_id=model.eow_token_id,
-            num_world_tokens=estimated_world_tokens,
         )
 
     return collate_fn

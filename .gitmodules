@@ -1,0 +1,3 @@
+[submodule "external/SpatialRGPT"]
+	path = external/SpatialRGPT
+	url = https://github.com/AnjieCheng/SpatialRGPT.git

@@ -8,7 +8,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 1. **Always use Makefile commands** when available instead of running `uv run` directly
 2. **Always run `make format`** after completing code changes before marking tasks as done
 3. Run `make check` to verify formatting before committing
-4. **Run smoke test first** after setup to verify everything works: `make smoke-test`
+4. **Run `make typecheck`** to verify type correctness (catches method signature mismatches, etc.)
+5. **Run smoke test first** after setup to verify everything works: `make smoke-test`
 
 ## Project Overview
 
@@ -104,6 +105,9 @@ make format
 # Check formatting without modifying
 make check
 
+# Run type checking with pyright (strict mode)
+make typecheck
+
 # Run inference example (demonstrates 3 scenarios)
 make run
 
@@ -148,14 +152,14 @@ python scripts/train_hf.py --config configs/smoke_test.json
 ```python
 from theworld import TheWorld
 
-# Load a trained model from Hub (for inference or continued training)
-model = TheWorld.from_pretrained("username/theworld-datacomp")
+# Load a trained checkpoint from Hub (for inference or continued training)
+model = TheWorld.from_checkpoint_hub("username/theworld-datacomp")
 
 # Use for inference
 response = model.generate(image, "What is in this image?")
 
 # Load specific checkpoint
-model = TheWorld.from_pretrained(
+model = TheWorld.from_checkpoint_hub(
     "username/theworld-datacomp",
     checkpoint_name="checkpoint-1000/pytorch_model.bin"
 )
@@ -165,40 +169,104 @@ model = TheWorld.from_pretrained(
 ```python
 from theworld import TheWorld
 
-# Single-step (current frame only, fastest)
-model = TheWorld("google/gemma-3-4b-it", num_world_steps=0)
+# IMPORTANT: Always use from_pretrained(), not the constructor
+# This properly handles dtype, device_map, and weight loading
 
-# Multi-step (predict 4 future frames)
-model = TheWorld("google/gemma-3-4b-it", num_world_steps=4)
+# Standard initialization with world model
+model = TheWorld.from_pretrained(
+    "google/gemma-3-4b-it",
+    enable_world=True,
+    dtype=torch.bfloat16,
+    device_map="auto"
+)
 
-# Override at runtime
-outputs = model.forward(image, text, num_world_steps=8)
+# Gemma-only baseline (no world model)
+model = TheWorld.from_pretrained(
+    "google/gemma-3-4b-it",
+    enable_world=False,
+    dtype=torch.bfloat16,
+    device_map="auto"
+)
 ```
 
 **Training Configuration:**
 ```python
 from theworld import TheWorld
+import torch
 
 # Train only projection layers (default, 0.07% params)
-model = TheWorld("google/gemma-3-4b-it")
+model = TheWorld.from_pretrained(
+    "google/gemma-3-4b-it",
+    enable_world=True,
+    dtype=torch.bfloat16,
+    device_map="auto"
+)
 
 # Use a different Cosmos model variant
-model = TheWorld(
+model = TheWorld.from_pretrained(
     "google/gemma-3-4b-it",
-    cosmos_model_name="nvidia/Cosmos-Predict2-2B-Video2World"
+    enable_world=True,
+    cosmos_model_name="nvidia/Cosmos-Predict2-2B-Video2World",
+    dtype=torch.bfloat16,
+    device_map="auto"
 )
 
 # Train VAE encoder + projections
-model = TheWorld("google/gemma-3-4b-it", freeze_cosmos_vae=False)
+model = TheWorld.from_pretrained(
+    "google/gemma-3-4b-it",
+    enable_world=True,
+    freeze_cosmos_vae=False,
+    dtype=torch.bfloat16,
+    device_map="auto"
+)
 
 # Train Gemma vision + projections
-model = TheWorld("google/gemma-3-4b-it", freeze_gemma_vision=False)
+model = TheWorld.from_pretrained(
+    "google/gemma-3-4b-it",
+    enable_world=True,
+    freeze_gemma_vision=False,
+    dtype=torch.bfloat16,
+    device_map="auto"
+)
 
 # Train Gemma language model + projections
-model = TheWorld("google/gemma-3-4b-it", freeze_gemma_language=False)
+model = TheWorld.from_pretrained(
+    "google/gemma-3-4b-it",
+    enable_world=True,
+    freeze_gemma_language=False,
+    dtype=torch.bfloat16,
+    device_map="auto"
+)
 ```
 
 ## Key Implementation Details
+
+### Initialization Pattern
+
+**IMPORTANT**: TheWorld uses the standard HuggingFace initialization pattern:
+
+```python
+# ✅ Correct - use from_pretrained()
+model = TheWorld.from_pretrained(
+    "google/gemma-3-4b-it",
+    enable_world=True,
+    dtype=torch.bfloat16,
+    device_map="auto"
+)
+
+# ❌ Incorrect - do NOT use constructor directly
+model = TheWorld(config)  # Only for internal use
+```
+
+**Why `from_pretrained()` is required:**
+1. **Proper weight loading**: Parent's `from_pretrained()` handles dtype conversion automatically
+2. **Buffer preservation**: Non-persistent buffers (like `inv_freq` in rotary embeddings) stay float32
+3. **Device mapping**: Automatically distributes model across GPUs with `device_map="auto"`
+4. **Standard pattern**: Follows HuggingFace conventions (same as LLaVA, other multimodal models)
+
+The `__init__(config)` constructor only creates model structure and is called internally by `from_pretrained()`.
+
+See `docs/logit_validation_investigation.md` for detailed explanation.
 
 ### Input Format Compatibility
 
@@ -309,6 +377,8 @@ Remove `local_files_only=True` on first run to download models.
 
 ```
 theworld/
+├── external/
+│   └── SpatialRGPT/                   # Git submodule (SpatialRGPT reference implementation)
 ├── python/theworld/                    # Core package
 │   ├── __init__.py                    # Package exports
 │   ├── config.py                      # TrainingConfig dataclass
@@ -323,7 +393,8 @@ theworld/
 │   │   └── outputs.py                 # Output dataclasses
 │   └── datasets/                      # Dataset loaders
 │       ├── __init__.py
-│       └── datacomp.py                # DataComp-1B dataset loader
+│       ├── datacomp.py                # DataComp-1B dataset loader
+│       └── spatial_rgpt.py            # SpatialRGPT dataset (eval + training)
 ├── examples/                           # Simple examples and demos
 │   ├── inference.py                   # Inference demo (3 scenarios)
 │   ├── simple_training.py             # Basic training demo (forward/backward)
@@ -335,6 +406,7 @@ theworld/
 │   ├── smoke_test.json               # Smoke test (2 samples, ~3 min verification)
 │   ├── datacomp_test.json            # DataComp quick test (100 samples)
 │   ├── datacomp_production.json      # DataComp production (streaming)
+│   ├── spatial_rgpt_training.json    # SpatialRGPT OpenSpatialDataset (~900K samples)
 │   └── eval_blink.json               # BLINK benchmark evaluation config
 ├── tests/                              # Test suite
 │   ├── test_cosmos_encoder.py        # CosmosEncoder integration tests
@@ -416,6 +488,51 @@ if token_id == IMAGE_SOFT_TOKEN_ID:
 if token_id == 262144:  # Don't do this!
     # Handle image token
 ```
+
+### Type Checking with Pyright
+
+The project uses **Pyright in strict mode** to catch type errors, including method signature mismatches when overriding base class methods.
+
+**Run type checking:**
+```bash
+make typecheck
+```
+
+**Configuration:**
+- `pyrightconfig.json` enables strict type checking with `reportIncompatibleMethodOverride`
+- Catches parameter count mismatches, parameter name mismatches, and type incompatibilities
+- Especially important when inheriting from Transformers models (e.g., `Gemma3ForConditionalGeneration`)
+
+**Example - Method Override Checking:**
+
+If you override a base class method, pyright will verify the signature matches exactly:
+
+```python
+# Base class (Gemma3ForConditionalGeneration)
+def prepare_inputs_for_generation(
+    self, input_ids, past_key_values=None, inputs_embeds=None,
+    cache_position=None, position_ids=None, pixel_values=None,
+    attention_mask=None, token_type_ids=None, use_cache=True,
+    logits_to_keep=None, labels=None, **kwargs
+):
+    ...
+
+# Override in TheWorld - must match exactly!
+def prepare_inputs_for_generation(
+    self, input_ids, past_key_values=None, inputs_embeds=None,
+    cache_position=None, position_ids=None,  # <- parameter 6 must be position_ids
+    pixel_values=None, attention_mask=None, token_type_ids=None,
+    use_cache=True, logits_to_keep=None, labels=None,
+    images=None,  # <- TheWorld-specific parameter added AFTER base params
+    **kwargs
+):
+    ...
+```
+
+**Important:** When overriding methods from Transformers models:
+1. Match the base class signature exactly (same parameter names and order)
+2. Add custom parameters AFTER all base parameters (before `**kwargs`)
+3. Run `make typecheck` to verify compatibility
 
 ### Adding New Training Configurations
 
@@ -543,6 +660,65 @@ def load_datasets(config):
 
     return train_dataset, eval_dataset
 ```
+
+### SpatialRGPT Training Dataset
+
+TheWorld includes built-in support for the **OpenSpatialDataset** (~900K spatial reasoning examples).
+
+**What is it?**
+- **Dataset**: [a8cheng/OpenSpatialDataset](https://huggingface.co/datasets/a8cheng/OpenSpatialDataset)
+- **Content**: Spatial reasoning QA pairs with region references (e.g., "Is Region [0] behind Region [1]?")
+- **Images**: OpenImagesV7 (requires separate download)
+- **Size**: ~900K training examples
+- **Purpose**: Teaches models about 3D spatial relationships, object positions, and visual grounding
+
+**Quick start:**
+
+```python
+from datasets import load_dataset
+from theworld.datasets import SpatialRGPTDataset
+
+# Load dataset metadata from HuggingFace
+hf_dataset = load_dataset("a8cheng/OpenSpatialDataset")
+
+# Wrap with SpatialRGPT loader
+train_dataset = SpatialRGPTDataset(
+    hf_dataset["train"],
+    image_folder="data/openimages/train",  # Point to your local OpenImages directory
+    draw_bboxes=False,  # Training data doesn't need bbox overlay
+)
+```
+
+**Full setup:**
+
+1. **Download OpenImagesV7 images**:
+   ```bash
+   mkdir -p data/openimages
+   # Download from: https://storage.googleapis.com/openimages/web/download_v7.html
+   # Follow their instructions to download train/validation splits
+   ```
+
+2. **Update training config**:
+   ```bash
+   # Edit configs/spatial_rgpt_training.json
+   vim configs/spatial_rgpt_training.json
+   # Set "image_folder": "data/openimages/train"
+   ```
+
+3. **Run training**:
+   ```bash
+   python scripts/train_hf.py --config configs/spatial_rgpt_training.json
+   ```
+
+**Integration details:**
+- SpatialRGPT repo is included as a git submodule at `external/SpatialRGPT`
+- Dataset loader automatically handles both training and evaluation formats
+- No need to draw bounding boxes for training (regions are referenced in text)
+- Compatible with standard TheWorld training pipeline
+
+**See also**:
+- `docs/eval/spatial_rgpt_bench.md` - Evaluation on SpatialRGPT-Bench
+- `configs/spatial_rgpt_training.json` - Training configuration
 
 ### Gradient Checkpointing
 

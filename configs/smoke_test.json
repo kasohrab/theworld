@@ -45,7 +45,7 @@
 
   "dataset_name": "datacomp",
   "num_samples": 2,
-  "streaming": true,
+  "streaming": false,
   "question_template": "Describe this image simply.",
 
   "hf_token": null,
@@ -54,7 +54,7 @@
   "hub_strategy": "every_save",
   "hub_private_repo": true,
 
-  "device": "cuda:1",
+  "device": "cuda",
 
   "_note_num_samples": "Just 2 samples to test pipeline quickly",
   "_note_save_steps": "Save after each step to verify checkpointing works",

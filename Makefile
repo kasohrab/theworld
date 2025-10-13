@@ -1,4 +1,4 @@
-.PHONY: setup pace-setup format check install run train train-simple train-hf eval-blink eval-gemma compare-results clean
+.PHONY: setup pace-setup format check typecheck install run train train-simple train-hf eval-blink eval-gemma compare-results clean
 
 # Complete setup (recommended for first-time setup)
 setup:
@@ -15,6 +15,10 @@ format:
 # Check formatting without modifying files
 check:
 	uv run black --check python/theworld/*.py examples/*.py scripts/*.py
+
+# Run type checking with pyright
+typecheck:
+	uv run pyright python/theworld examples scripts
 
 # Install dependencies including dev tools (use 'make setup' instead for full setup)
 install:

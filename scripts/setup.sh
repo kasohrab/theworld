@@ -64,7 +64,7 @@ echo "========================================"
 echo ""
 
 # Step 1: Check uv is installed
-echo -e "${BLUE}[1/7]${NC} Checking prerequisites..."
+echo -e "${BLUE}[1/8]${NC} Checking prerequisites..."
 if ! command -v uv &> /dev/null; then
     echo -e "${RED}✗ Error: 'uv' package manager not found${NC}"
     echo ""
@@ -87,7 +87,7 @@ fi
 echo ""
 
 # Step 2: Install core dependencies
-echo -e "${BLUE}[2/7]${NC} Installing core dependencies..."
+echo -e "${BLUE}[2/8]${NC} Installing core dependencies..."
 if [ "$SKIP_DEV" = true ]; then
     echo "  Running: uv sync"
     uv sync
@@ -99,7 +99,7 @@ fi
 echo ""
 
 # Step 3: Install Cosmos guardrail
-echo -e "${BLUE}[3/7]${NC} Installing Cosmos safety checker..."
+echo -e "${BLUE}[3/8]${NC} Installing Cosmos safety checker..."
 echo "  Note: cosmos_guardrail dependencies are already in pyproject.toml"
 echo "  The package itself requires special handling due to version conflicts"
 
@@ -120,14 +120,14 @@ fi
 echo ""
 
 # Step 4: Create necessary directories
-echo -e "${BLUE}[4/7]${NC} Creating directories..."
+echo -e "${BLUE}[4/8]${NC} Creating directories..."
 mkdir -p checkpoints
 mkdir -p logs
 echo -e "${GREEN}✓ Created checkpoints/ and logs/ directories${NC}"
 echo ""
 
 # Step 5: Check HF_TOKEN
-echo -e "${BLUE}[5/7]${NC} Checking HuggingFace authentication..."
+echo -e "${BLUE}[5/8]${NC} Checking HuggingFace authentication..."
 if [ -z "$HF_TOKEN" ]; then
     echo -e "${YELLOW}⚠ HF_TOKEN environment variable not set${NC}"
     echo ""
@@ -142,7 +142,16 @@ fi
 echo ""
 
 # Step 6: Verify installation
-echo -e "${BLUE}[6/7]${NC} Verifying installation..."
+echo -e "${BLUE}[6/8]${NC} Initializing git submodules..."
+if git submodule update --init --recursive; then
+    echo -e "${GREEN}✓ Git submodules initialized${NC}"
+else
+    echo -e "${YELLOW}⚠ Failed to initialize submodules (might not exist yet)${NC}"
+fi
+echo ""
+
+# Step 7: Verify installation
+echo -e "${BLUE}[7/8]${NC} Verifying installation..."
 if uv run python -c "from theworld import TheWorld; print('OK')" > /dev/null 2>&1; then
     echo -e "${GREEN}✓ TheWorld package imports successfully${NC}"
 else
@@ -152,8 +161,8 @@ else
 fi
 echo ""
 
-# Step 7: Print summary
-echo -e "${BLUE}[7/7]${NC} Setup complete!"
+# Step 8: Print summary
+echo -e "${BLUE}[8/8]${NC} Setup complete!"
 echo ""
 echo "========================================"
 echo -e "${GREEN}✓ Installation Summary${NC}"

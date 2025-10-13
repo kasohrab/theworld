@@ -1,0 +1,66 @@
+{
+  "_comment": "Training configuration for SpatialRGPT OpenSpatialDataset (~900K spatial reasoning examples)",
+
+  "model_name": "google/gemma-3-4b-it",
+  "cosmos_model_name": "nvidia/Cosmos-Predict2-2B-Video2World",
+  "num_world_steps": 0,
+  "max_world_steps": 16,
+  "freeze_gemma_vision": true,
+  "freeze_gemma_language": true,
+  "freeze_cosmos_vae": true,
+
+  "learning_rate": 0.0001,
+  "batch_size": 8,
+  "gradient_accumulation_steps": 2,
+  "num_epochs": 1,
+  "warmup_steps": 500,
+  "weight_decay": 0.01,
+  "max_grad_norm": 1.0,
+
+  "use_gradient_checkpointing": false,
+  "mixed_precision": "bf16",
+
+  "output_dir": "./checkpoints/theworld-spatial-rgpt",
+  "save_steps": 1000,
+  "save_total_limit": 3,
+  "resume_from_checkpoint": null,
+
+  "eval_steps": 5000,
+  "eval_batch_size": 8,
+  "do_eval": false,
+
+  "logging_steps": 50,
+  "log_to_wandb": true,
+  "wandb_project": "theworld-spatial-rgpt",
+  "wandb_run_name": "projection-only-v1",
+  "log_to_tensorboard": true,
+
+  "max_seq_length": 2048,
+  "num_workers": 8,
+  "dataset_name": "spatial_rgpt",
+  "train_dataset_path": "a8cheng/OpenSpatialDataset",
+  "eval_dataset_path": null,
+  "num_samples": null,
+  "streaming": false,
+
+  "_dataset_setup_instructions": [
+    "The OpenSpatialDataset is available on HuggingFace (a8cheng/OpenSpatialDataset)",
+    "It contains ~900K spatial reasoning examples with bounding box references",
+    "Images are from OpenImagesV7 - you'll need to:",
+    "  1. Download the dataset metadata: datasets.load_dataset('a8cheng/OpenSpatialDataset')",
+    "  2. Download OpenImagesV7 images to data/openimages/",
+    "  3. Set image_folder to point to your OpenImages directory",
+    "  4. Optional: Generate depth maps with DepthAnythingV2 for enhanced training"
+  ],
+
+  "image_folder": null,
+  "_image_folder_comment": "Set to your OpenImagesV7 directory (e.g., 'data/openimages/train')",
+
+  "hf_token": null,
+  "push_to_hub": true,
+  "hub_model_id": "your-username/theworld-spatial-rgpt",
+  "hub_strategy": "every_save",
+  "hub_private_repo": false,
+
+  "device": "cuda"
+}

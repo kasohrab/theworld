@@ -6,7 +6,7 @@ import numpy as np
 from PIL import Image
 from typing import List, Optional, Union, Dict
 from torch import Tensor
-from transformers import Gemma3ForConditionalGeneration, AutoProcessor, GenerationConfig
+from transformers import Gemma3ForConditionalGeneration, Gemma3Config, AutoProcessor, GenerationConfig
 from transformers.modeling_outputs import CausalLMOutputWithPast
 from diffusers.pipelines.cosmos.pipeline_cosmos2_video2world import Cosmos2VideoToWorldPipeline
 from diffusers.models.autoencoders.autoencoder_kl import AutoencoderKL
@@ -17,7 +17,7 @@ from .fusion import EmbeddingFusion
 from ..constants import DEFAULT_COSMOS_MODEL, DEFAULT_GEMMA_MODEL
 
 
-class TheWorld(nn.Module):
+class TheWorld(Gemma3ForConditionalGeneration):
     def __init__(
         self,
         gemma_model_name,
