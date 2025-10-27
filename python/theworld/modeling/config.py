@@ -1,20 +1,21 @@
-from theworld.constants import DEFAULT_COSMOS_MODEL
+from theworld.constants import DEFAULT_COSMOS_MODEL, DEFAULT_GEMMA_MODEL
 from transformers import Gemma3Config
+from typing import Optional
 
 class TheWorldConfig(Gemma3Config):
-    model_type = "the_world"  # Register a new model type
+    model_type = "the_world"
 
     def __init__(
         self,
+        gemma_model_name: Optional[str] = DEFAULT_GEMMA_MODEL,
         cosmos_model_name: str = DEFAULT_COSMOS_MODEL,
         enable_world: bool = True,
         freeze_gemma_vision: bool = True,
         freeze_gemma_language: bool = True,
         freeze_cosmos_vae: bool = True,
-        
-        # Pass all original Gemma3Config args to the parent
         **kwargs,
     ):
+        self.gemma_model_name = gemma_model_name
         self.cosmos_model_name = cosmos_model_name
         self.enable_world = enable_world
         self.freeze_gemma_vision = freeze_gemma_vision

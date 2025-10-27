@@ -4,11 +4,10 @@ import torch
 import torch.nn as nn
 from PIL import Image
 from typing import Any, Dict, List, Optional, Union
-from transformers import Gemma3ForConditionalGeneration, AutoProcessor
+from transformers import Gemma3ForConditionalGeneration, AutoConfig, AutoProcessor
 from transformers.cache_utils import Cache
 from diffusers.pipelines.cosmos.pipeline_cosmos2_video2world import Cosmos2VideoToWorldPipeline
 from diffusers.models.autoencoders.autoencoder_kl import AutoencoderKL
-from huggingface_hub import hf_hub_download
 
 from .cosmos_encoder import CosmosEncoder
 from .fusion import EmbeddingFusion
@@ -25,15 +24,6 @@ class TheWorld(Gemma3ForConditionalGeneration):
     """
 
     # Type annotations for instance variables
-    gemma_model_name: Optional[str]
-    cosmos_model_name: Optional[str]
-    freeze_gemma_vision: bool
-    freeze_gemma_language: bool
-    freeze_cosmos_vae: bool
-    random_projection_init: bool
-    load_full_cosmos_pipeline: bool
-    enable_world: bool
-
     processor: Optional[Any]  # AutoProcessor type not fully typed in transformers
     cosmos_pipe: Optional[Cosmos2VideoToWorldPipeline]
     cosmos_vae: Optional[AutoencoderKL]
@@ -52,12 +42,13 @@ class TheWorld(Gemma3ForConditionalGeneration):
         This method only creates the model structure without loading weights.
 
         Args:
-            config: Gemma3Config from pretrained model
+            config: TheWorldConfig with model hyperparameters
         """
         super().__init__(config)
 
-        # These will be set by from_pretrained()
-        self.enable_world = False
+        # Initialize placeholders for world model components
+        # These will be populated by from_pretrained()
+        self.processor = None
         self.cosmos_pipe = None
         self.cosmos_vae = None
         self.cosmos_vae_encoder = None
@@ -65,16 +56,6 @@ class TheWorld(Gemma3ForConditionalGeneration):
         self.fusion = None
         self.sow_token_id = None
         self.eow_token_id = None
-        self.processor = None
-
-        # Configuration flags (set by from_pretrained)
-        self.gemma_model_name = None
-        self.cosmos_model_name = None
-        self.freeze_gemma_vision = True
-        self.freeze_gemma_language = True
-        self.freeze_cosmos_vae = True
-        self.random_projection_init = False
-        self.load_full_cosmos_pipeline = True
 
     @classmethod
     def from_pretrained(
@@ -87,48 +68,166 @@ class TheWorld(Gemma3ForConditionalGeneration):
         freeze_gemma_vision: bool = True,
         freeze_gemma_language: bool = True,
         freeze_cosmos_vae: bool = True,
-        random_projection_init: bool = False,
-        load_full_cosmos_pipeline: bool = True,
         **kwargs: Any
     ) -> "TheWorld":
         """
-        Loads TheWorld model.
-        
-        - Case A (New Model): Loads a base Gemma model and initializes
-          new world model components.
-        - Case B (Saved Checkpoint): Loads a saved TheWorld checkpoint.
+        Load TheWorld model from pretrained weights.
+
+        - Case A (New Model): Loads a base Gemma model and initializes new world model components.
+        - Case B (Saved Checkpoint): Loads a saved TheWorld checkpoint with world components.
+
+        Args:
+            pretrained_model_name_or_path: HuggingFace model ID or path
+            enable_world: If True, add Cosmos world model. If False, Gemma-only baseline
+            cosmos_model_name: HuggingFace model ID for Cosmos world model
+            device: Device to load Cosmos on ("cuda", "cpu", etc.)
+            freeze_gemma_vision: If True, freeze Gemma's vision encoder (SigLIP)
+            freeze_gemma_language: If True, freeze Gemma's language model
+            freeze_cosmos_vae: If True, freeze Cosmos VAE encoder
+            **kwargs: Passed to parent's from_pretrained (dtype, device_map, etc.)
+
+        Returns:
+            Initialized TheWorld model with loaded weights
         """
+        import gc
+
+        # Validate configuration
+        if not enable_world and not freeze_cosmos_vae:
+            raise ValueError(
+                "Invalid configuration: enable_world=False but freeze_cosmos_vae=False. "
+                "Cannot train Cosmos VAE when world model is not enabled."
+            )
+
         # 1. Load config from path
         config = AutoConfig.from_pretrained(pretrained_model_name_or_path, **kwargs)
 
-        # 2. Check config type to see which case we are in
+        # 2. Check config type to determine loading path
         if isinstance(config, TheWorldConfig):
+            # Case B: Loading saved TheWorld checkpoint
             print(f"Loading saved TheWorld checkpoint from: {pretrained_model_name_or_path}")
             model = super(TheWorld, cls).from_pretrained(
                 pretrained_model_name_or_path, *model_args, config=config, **kwargs
             )
-            
+            # Components should already be loaded from checkpoint
+            # But we need to reload Cosmos and processor since they're not saved
+            device_to_use = config.gemma_model_name if hasattr(config, 'gemma_model_name') else pretrained_model_name_or_path
+
         else:
+            # Case A: Initializing new TheWorld from base Gemma
             print(f"Initializing new TheWorld model from base: {pretrained_model_name_or_path}")
-            
+
+            # Load Gemma via parent's from_pretrained
             model = super(TheWorld, cls).from_pretrained(
                 pretrained_model_name_or_path, *model_args, **kwargs
             )
+            print(f"✓ Gemma loaded (dtype: {next(model.parameters()).dtype})")
 
-            the_world_config = TheWorldConfig.from_dict(
-                model.config.to_dict(),
+            # Create TheWorldConfig from Gemma config
+            gemma_config_dict = model.config.to_dict()
+            # Remove any conflicting keys that we're setting explicitly
+            gemma_config_dict.pop("gemma_model_name", None)
+            gemma_config_dict.pop("cosmos_model_name", None)
+            gemma_config_dict.pop("enable_world", None)
+            gemma_config_dict.pop("freeze_gemma_vision", None)
+            gemma_config_dict.pop("freeze_gemma_language", None)
+            gemma_config_dict.pop("freeze_cosmos_vae", None)
+
+            the_world_config = TheWorldConfig(
+                gemma_model_name=pretrained_model_name_or_path,
                 cosmos_model_name=cosmos_model_name,
                 enable_world=enable_world,
                 freeze_gemma_vision=freeze_gemma_vision,
                 freeze_gemma_language=freeze_gemma_language,
                 freeze_cosmos_vae=freeze_cosmos_vae,
-                load_full_cosmos_pipeline=load_full_cosmos_pipeline,
-                random_projection_init=random_projection_init,
+                **gemma_config_dict
             )
-            the_world_config.gemma_model_name = pretrained_model_name_or_path
-            
+
             model.config = the_world_config
-            model.__init__(the_world_config) 
+
+            # Initialize placeholder attributes WITHOUT calling __init__
+            # (calling __init__ would reinitialize the parent model and break device_map)
+            model.processor = None
+            model.cosmos_pipe = None
+            model.cosmos_vae = None
+            model.cosmos_vae_encoder = None
+            model.cosmos_encoder = None
+            model.fusion = None
+            model.sow_token_id = None
+            model.eow_token_id = None
+
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        # 3. Load processor (needed for tokenization)
+        base_model = model.config.gemma_model_name if hasattr(model.config, 'gemma_model_name') else pretrained_model_name_or_path
+        model.processor = AutoProcessor.from_pretrained(
+            base_model,
+            local_files_only=False,
+        )
+
+        # 4. Load Cosmos (conditionally)
+        if model.config.enable_world:
+            print("Loading Cosmos pipeline...")
+            from cosmos_guardrail import CosmosSafetyChecker
+
+            safety_checker = CosmosSafetyChecker()
+            model.cosmos_pipe = Cosmos2VideoToWorldPipeline.from_pretrained(
+                model.config.cosmos_model_name,
+                torch_dtype=torch.bfloat16,
+                safety_checker=safety_checker,
+                low_cpu_mem_usage=True,
+                local_files_only=False,
+            )
+            # Move only VAE to GPU - keep safety checker in RAM to save memory
+            model.cosmos_vae = model.cosmos_pipe.vae.to(device)
+            model.cosmos_vae_encoder = model.cosmos_vae.encoder
+            print(f"✓ Cosmos pipeline loaded (VAE on {device}, safety checker in RAM)")
+
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+            # 5. Create Cosmos components (encoder, fusion, tokens)
+            assert model.cosmos_vae is not None, "Cosmos VAE must be loaded"
+            cosmos_img_dim = getattr(model.cosmos_vae.config, "z_dim", 16)
+            gemma_dim = model.config.text_config.hidden_size
+
+            # Add world tokens
+            custom_tokens = ["<start_of_world>", "<end_of_world>"]
+            num_added = model.processor.tokenizer.add_special_tokens(
+                {"additional_special_tokens": custom_tokens}
+            )
+            if num_added > 0:
+                model.resize_token_embeddings(len(model.processor.tokenizer))
+                print(f"✓ Added {num_added} custom tokens to vocabulary")
+
+            model.sow_token_id = model.processor.tokenizer.convert_tokens_to_ids("<start_of_world>")
+            model.eow_token_id = model.processor.tokenizer.convert_tokens_to_ids("<end_of_world>")
+            print(f"✓ Custom token IDs: SOW={model.sow_token_id}, EOW={model.eow_token_id}")
+
+            # CosmosEncoder
+            model.cosmos_encoder = CosmosEncoder(
+                cosmos_vae=model.cosmos_vae,
+                cosmos_dim=cosmos_img_dim,
+                gemma_dim=gemma_dim,
+                device=device,
+                freeze_vae=model.config.freeze_cosmos_vae,
+            )
+
+            # EmbeddingFusion
+            model.fusion = EmbeddingFusion(
+                sow_token_id=model.sow_token_id,
+                eow_token_id=model.eow_token_id,
+            )
+        else:
+            print("⊘ Skipping Cosmos loading (Gemma-only mode)")
+
+        # Workaround for RetinaFace bug (cosmos_guardrail dependency disables gradients globally)
+        torch.set_grad_enabled(True)
+
+        # 6. Apply freezing configuration
+        model._apply_freezing()
 
         return model
 
@@ -137,6 +236,104 @@ class TheWorld(Gemma3ForConditionalGeneration):
         trainable = sum(p.numel() for p in self.parameters() if p.requires_grad)
         total = sum(p.numel() for p in self.parameters())
         return trainable, total, 100 * trainable / total
+
+    def _apply_freezing(self):
+        """Apply freezing configuration to model components."""
+        # 1. Freeze/unfreeze Gemma vision encoder (SigLIP)
+        if self.config.freeze_gemma_vision:
+            for param in self.model.vision_tower.parameters():
+                param.requires_grad = False
+            print("✓ Gemma vision encoder (SigLIP) frozen")
+        else:
+            for param in self.model.vision_tower.parameters():
+                param.requires_grad = True
+            print("✓ Gemma vision encoder (SigLIP) trainable")
+
+        # 2. Freeze/unfreeze Gemma language model
+        if self.config.freeze_gemma_language:
+            for param in self.model.language_model.parameters():
+                param.requires_grad = False
+            for param in self.lm_head.parameters():
+                param.requires_grad = False
+            print("✓ Gemma language model frozen")
+        else:
+            for param in self.model.language_model.parameters():
+                param.requires_grad = True
+            for param in self.lm_head.parameters():
+                param.requires_grad = True
+            print("✓ Gemma language model trainable")
+
+        # 3. Freeze/unfreeze Cosmos VAE encoder (only if Cosmos loaded)
+        if self.config.enable_world and self.cosmos_vae_encoder is not None:
+            if self.config.freeze_cosmos_vae:
+                for param in self.cosmos_vae_encoder.parameters():
+                    param.requires_grad = False
+                print("✓ Cosmos VAE encoder frozen")
+            else:
+                for param in self.cosmos_vae_encoder.parameters():
+                    param.requires_grad = True
+                print("✓ Cosmos VAE encoder trainable")
+
+            # 4. Always keep projection layer trainable
+            if self.cosmos_encoder is not None:
+                for param in self.cosmos_encoder.world_projection.parameters():
+                    param.requires_grad = True
+                print("✓ World projection layer trainable")
+
+        # Print final trainable parameter count
+        trainable, total, pct = self.get_trainable_parameters()
+        print(f"✓ Trainable parameters: {trainable:,} / {total:,} ({pct:.2f}%)")
+
+    def _inject_world_tokens(
+        self,
+        input_ids: torch.LongTensor,
+        attention_mask: Optional[torch.Tensor],
+    ) -> tuple[torch.LongTensor, Optional[torch.Tensor]]:
+        """Inject SOW and EOW tokens at the beginning of the sequence.
+
+        Inserts tokens as: [BOS, SOW, EOW, ...rest...]
+
+        Args:
+            input_ids: Token IDs (B, seq_len)
+            attention_mask: Attention mask (B, seq_len)
+
+        Returns:
+            Modified input_ids and attention_mask with world tokens inserted
+        """
+        batch_size, seq_len = input_ids.shape
+        device = input_ids.device
+
+        # Create new input_ids with space for SOW and EOW tokens
+        # Structure: [BOS, SOW, EOW, ...rest...]
+        new_input_ids = torch.zeros(
+            (batch_size, seq_len + 2), dtype=input_ids.dtype, device=device
+        )
+
+        # Copy BOS token (position 0)
+        new_input_ids[:, 0] = input_ids[:, 0]
+
+        # Insert SOW and EOW tokens after BOS
+        new_input_ids[:, 1] = self.sow_token_id  # type: ignore
+        new_input_ids[:, 2] = self.eow_token_id  # type: ignore
+
+        # Copy rest of sequence
+        new_input_ids[:, 3:] = input_ids[:, 1:]
+
+        # Update attention mask if provided
+        if attention_mask is not None:
+            new_attention_mask = torch.zeros(
+                (batch_size, seq_len + 2), dtype=attention_mask.dtype, device=device
+            )
+            # Copy attention for BOS
+            new_attention_mask[:, 0] = attention_mask[:, 0]
+            # Set attention for SOW and EOW
+            new_attention_mask[:, 1] = 1
+            new_attention_mask[:, 2] = 1
+            # Copy rest of attention mask
+            new_attention_mask[:, 3:] = attention_mask[:, 1:]
+            attention_mask = new_attention_mask
+
+        return new_input_ids, attention_mask
 
     def state_dict(self, *args: Any, **kwargs: Any) -> Dict[str, Any]:
         """Save only trainable parameters.
@@ -260,7 +457,7 @@ class TheWorld(Gemma3ForConditionalGeneration):
             CausalLMOutputWithPast with loss, logits, and optionally past_key_values
         """
         # Route to world-augmented or pure Gemma path
-        if self.enable_world and images is not None:
+        if self.config.enable_world and images is not None:
             # Inject world tokens if not present
             if (
                 input_ids is not None
@@ -439,7 +636,7 @@ class TheWorld(Gemma3ForConditionalGeneration):
         """
         # If this is the first generation step and world is enabled, inject SOW/EOW
         if (
-            self.enable_world
+            self.config.enable_world
             and cache_position is not None
             and cache_position[0] == 0
             and self.sow_token_id is not None

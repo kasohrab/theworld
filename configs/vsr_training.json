@@ -20,10 +20,10 @@
   "use_gradient_checkpointing": true,
   "mixed_precision": "bf16",
 
-  "output_dir": "./checkpoints/theworld-vsr",
+  "output_dir": "./checkpoints/theworld-vsr-new",
   "save_steps": 250,
   "save_total_limit": 100,
-  "resume_from_checkpoint": "./checkpoints/theworld-vsr/checkpoint-500",
+  "resume_from_checkpoint": null,
 
   "eval_steps": 500,
   "eval_batch_size": 8,
