@@ -35,7 +35,6 @@ sys.path.insert(0, str(project_root))
 
 from theworld import TheWorld
 from theworld.constants import DEFAULT_GEMMA_MODEL
-from theworld.data import create_theworld_collator
 import torch
 
 
@@ -307,8 +306,7 @@ def evaluate_vsr(
 
     print(f"Dataset size: {len(dataset)} examples")
 
-    # Create collator for preprocessing
-    collate_fn = create_theworld_collator(model)
+    # Get device
     device = next(model.parameters()).device
 
     # Run inference
@@ -329,18 +327,15 @@ def evaluate_vsr(
             continue
 
         # Load image
-        from PIL import Image
-
         image = Image.open(image_path).convert("RGB")
 
-        # Format question
+        # Format question as chat messages
         caption = example["caption"]
-        prompt = format_question(caption)
+        messages = format_question(image, caption)
 
-        # Preprocess with collator
+        # Apply chat template using processor
         try:
-            batch = [{"image": image, "text": prompt, "label": None}]
-            inputs = collate_fn(batch)
+            inputs = model.processor.apply_chat_template(messages, tokenize=True, return_dict=True, return_tensors="pt")
 
             # Move tensors to device
             inputs["input_ids"] = inputs["input_ids"].to(device)

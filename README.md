@@ -79,6 +79,21 @@ print(response)
 
 ---
 
+## 🎯 Running Examples
+
+**Inference example:**
+```bash
+export HF_TOKEN=hf_your_token_here
+PYTHONPATH=python:$PYTHONPATH uv run python examples/inference.py
+```
+
+**Test baseline equivalence** (TheWorld with `enable_world=False` == pure Gemma3):
+```bash
+PYTHONPATH=python:$PYTHONPATH uv run pytest tests/test_baseline_equivalence.py -v
+```
+
+---
+
 ## 📦 Installation Options
 
 <details>

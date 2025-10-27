@@ -1,138 +1,67 @@
-from theworld import TheWorld
-from theworld.constants import DEFAULT_GEMMA_MODEL
-from theworld.data import create_theworld_collator
-from theworld.generation import greedy_decode
+"""Simple inference example using TheWorld with AutoConfig."""
+
+import torch
 from PIL import Image
+from theworld import TheWorld
 
 
 def main():
-    # Set device
-    device = "cuda"
-    print(f"Using device: {device}")
+    """Demonstrate basic inference with TheWorld model."""
 
-    # Create a single model instance
-    print("\n" + "=" * 60)
-    print("Loading model...")
-    print("=" * 60)
+    # 1. Load model using AutoConfig pattern
+    print("Loading TheWorld model...")
+    model = TheWorld.from_pretrained(
+        "google/gemma-3-4b-it",
+        enable_world=True,  # Enable Cosmos world model
+        device="cuda",
+        freeze_gemma_vision=True,
+        freeze_gemma_language=True,
+        freeze_cosmos_vae=True,
+        dtype=torch.bfloat16,
+        device_map="auto",
+    )
+    print(f"✓ Model loaded")
 
-    model = TheWorld(DEFAULT_GEMMA_MODEL, device=device, num_world_steps=4)
+    # 2. Prepare input
+    print("\nPreparing input...")
+    image = Image.new("RGB", (512, 512), color=(100, 150, 200))  # Dummy image
 
-    # Create dummy image (random for testing)
-    dummy_image = Image.new("RGB", (896, 896), color=(100, 150, 200))
-    text_prompt = "What is in this image?"
+    # Use Gemma's chat template format
+    messages = [
+        {
+            "role": "user",
+            "content": [{"type": "image", "image": image}, {"type": "text", "text": "What is in this image?"}],
+        }
+    ]
 
-    # Create collator for preprocessing
-    collate_fn = create_theworld_collator(model)
+    # Process with Gemma processor
+    inputs = model.processor.apply_chat_template(messages, tokenize=True, return_dict=True, return_tensors="pt")
 
-    # Example 1: Single-step (no rollout) - Fast inference
-    print("\n" + "=" * 60)
-    print("Example 1: Single-step world model (no future prediction)")
-    print("=" * 60)
+    # Move to device
+    inputs = {k: v.to(model.device) if isinstance(v, torch.Tensor) else v for k, v in inputs.items()}
 
-    print("Running single-step forward pass (override to 0 steps)...")
+    # Add PIL image for Cosmos
+    inputs["images"] = [image]
 
-    # Prepare batch
-    batch = [{"image": dummy_image, "text": text_prompt, "label": None}]
-    inputs = collate_fn(batch)
+    # 3. Generate response
+    print("\nGenerating response...")
+    generated_ids = model.generate(
+        **inputs,
+        max_new_tokens=50,
+        do_sample=False,  # Greedy decoding
+    )
 
-    # Move tensors to device (preserve TypedDict type)
-    inputs["input_ids"] = inputs["input_ids"].to(device)
-    inputs["attention_mask"] = inputs["attention_mask"].to(device)
-    inputs["pixel_values"] = inputs["pixel_values"].to(device)
-    if inputs["labels"] is not None:
-        inputs["labels"] = inputs["labels"].to(device)
+    # 4. Decode and display
+    # Skip the prompt tokens (only show generated text)
+    prompt_length = inputs["input_ids"].shape[1]
+    generated_text = model.processor.tokenizer.decode(generated_ids[0][prompt_length:], skip_special_tokens=True)
 
-    # Forward pass with override
-    outputs_single = model.forward(**inputs, num_world_steps=0)
-
-    assert outputs_single.logits is not None, "Expected logits in output"
-    print(f"✓ Output shape: {outputs_single.logits.shape}")
-    print(f"  - Includes: Gemma vision tokens + Cosmos world tokens + text")
-    print(f"  - Total context: {outputs_single.logits.shape[1]} tokens")
-
-    # Decode next token prediction
-    next_token_id, next_token_text = greedy_decode(outputs_single, model.processor.tokenizer)
-    print(f"\n  Next token prediction:")
-    print(f"    Token ID: {next_token_id}")
-    print(f"    Decoded: '{next_token_text}'")
-    print(f"    (Greedy decoding - highest probability token)")
-
-    # Example 2: Multi-step rollout (4 future frames)
-    print("\n" + "=" * 60)
-    print("Example 2: Multi-step rollout (predict 4 future frames)")
-    print("=" * 60)
-
-    print("Running multi-step forward pass (predicting 4 future frames)...")
-    print("This will take longer as Cosmos generates future states...")
-
-    # Prepare batch (same as before)
-    batch = [{"image": dummy_image, "text": text_prompt, "label": None}]
-    inputs = collate_fn(batch)
-
-    # Move tensors to device (preserve TypedDict type)
-    inputs["input_ids"] = inputs["input_ids"].to(device)
-    inputs["attention_mask"] = inputs["attention_mask"].to(device)
-    inputs["pixel_values"] = inputs["pixel_values"].to(device)
-    if inputs["labels"] is not None:
-        inputs["labels"] = inputs["labels"].to(device)
-
-    # Forward pass with default num_world_steps=4
-    outputs_multi = model.forward(**inputs)
-
-    assert outputs_multi.logits is not None, "Expected logits in output"
-    print(f"✓ Output shape: {outputs_multi.logits.shape}")
-    print(f"  - Gemma vision: ~256 tokens (896x896 at 14px patches)")
-    print(f"  - Cosmos world: ~3920 tokens (5 frames × 28×28)")
-    print(f"  - Total context: {outputs_multi.logits.shape[1]} tokens")
-    print(f"  - Frames: 1 (input) + 4 (predicted future)")
-
-    # Decode next token prediction
-    next_token_id, next_token_text = greedy_decode(outputs_multi, model.processor.tokenizer)
-    print(f"\n  Next token prediction (with temporal context):")
-    print(f"    Token ID: {next_token_id}")
-    print(f"    Decoded: '{next_token_text}'")
-
-    # Example 3: Override rollout at inference time
-    print("\n" + "=" * 60)
-    print("Example 3: Override rollout length at inference time")
-    print("=" * 60)
-
-    print("Model initialized with num_world_steps=4, but overriding to 2...")
-
-    batch = [{"image": dummy_image, "text": text_prompt, "label": None}]
-    inputs = collate_fn(batch)
-
-    # Move tensors to device (preserve TypedDict type)
-    inputs["input_ids"] = inputs["input_ids"].to(device)
-    inputs["attention_mask"] = inputs["attention_mask"].to(device)
-    inputs["pixel_values"] = inputs["pixel_values"].to(device)
-    if inputs["labels"] is not None:
-        inputs["labels"] = inputs["labels"].to(device)
-
-    # Override to predict only 2 future frames
-    outputs_override = model.forward(**inputs, num_world_steps=2)
-
-    assert outputs_override.logits is not None, "Expected logits in output"
-    print(f"✓ Output shape: {outputs_override.logits.shape}")
-    print(f"  - Cosmos world: ~2352 tokens (3 frames × 28×28)")
-    print(f"  - Frames: 1 (input) + 2 (predicted future)")
-
-    # Decode next token prediction
-    next_token_id, next_token_text = greedy_decode(outputs_override, model.processor.tokenizer)
-    print(f"\n  Next token prediction:")
-    print(f"    Token ID: {next_token_id}")
-    print(f"    Decoded: '{next_token_text}'")
+    print(f"✓ Generated {len(generated_ids[0]) - prompt_length} tokens")
+    print(f"\nGenerated response:\n  {generated_text}")
 
     print("\n" + "=" * 60)
-    print("All examples completed successfully!")
+    print("Generation complete!")
     print("=" * 60)
-    print("\nKey features:")
-    print("  - Dual vision: Gemma's SigLIP + Cosmos world model")
-    print("  - Gemma provides: static visual understanding (objects, scenes)")
-    print("  - Cosmos provides: temporal dynamics (motion, physics, future states)")
-    print("\nSee docs/ for details:")
-    print("  - autoregressive_world_rollout.md: How rollout works")
-    print("  - world_model_latent_space.md: Cosmos latent extraction")
 
 
 if __name__ == "__main__":

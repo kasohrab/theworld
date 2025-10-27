@@ -104,8 +104,6 @@ class CosmosEncoder(nn.Module):
             _ = self.cosmos_vae.to(target_device)
             self._vae_device_set = True
 
-        # IMPORTANT: Don't use torch.no_grad() here! Even though VAE is frozen,
-        # we need gradients to flow through these latents back to the projection layer
         encoder_output = cast(AutoencoderKLOutput, self.cosmos_vae.encode(cosmos_input_5d))
         latent_dist = encoder_output.latent_dist
         latents = latent_dist.mode()  # Deterministic: use mode, not mean or sample
@@ -122,8 +120,6 @@ class CosmosEncoder(nn.Module):
         # Reshape to 2D for projection: (B, H*W, 16)
         num_tokens = h * w
         reshaped_latents = latents.reshape(b, num_tokens, c)
-
-        # Ensure correct dtype
         reshaped_latents = reshaped_latents.to(dtype=torch.bfloat16)
 
         # Project to Gemma dimension: (B, H*W, 16) → (B, H*W, 2304)
