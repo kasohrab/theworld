@@ -42,42 +42,7 @@ def processor():
     return AutoProcessor.from_pretrained("google/gemma-3-4b-it")
 
 
-def get_main_device(model):
-    """Get the main compute device for models with device_map='auto'.
-
-    With device_map='auto', models use Accelerate's dispatch mechanism which
-    places tensors via hooks. The actual .weight.device might show 'cpu', but
-    runtime dispatch moves data to the correct device. We need to check the
-    hf_device_map to find where inputs should go.
-    """
-    # Check hf_device_map first (set by device_map='auto')
-    if hasattr(model, 'hf_device_map') and model.hf_device_map:
-        # Get the device for the first layer (typically embed_tokens or lm_head)
-        # Device map values are integers (0, 1, etc.) representing cuda:0, cuda:1, etc.
-        device_id = None
-        for key in ['model.language_model.embed_tokens', 'lm_head', 'model.embed_tokens']:
-            if key in model.hf_device_map:
-                device_id = model.hf_device_map[key]
-                break
-
-        if device_id is not None:
-            if isinstance(device_id, int):
-                return torch.device(f'cuda:{device_id}')
-            else:
-                return torch.device(device_id)
-
-    # Fallback: try to get device from actual parameters
-    # Note: With Accelerate dispatch, this might return 'cpu' even though
-    # the model will execute on CUDA
-    if hasattr(model, 'lm_head') and model.lm_head is not None:
-        return model.lm_head.weight.device
-    elif hasattr(model, 'model') and hasattr(model.model, 'language_model'):
-        return next(model.model.language_model.parameters()).device
-    else:
-        return next(model.parameters()).device
-
-
-def test_same_generated_tokens(gemma_model: Gemma3ForConditionalGeneration, theworld_model: TheWorld, processor):
+def test_same_generated_tokens(gemma_model: Gemma3ForConditionalGeneration, theworld_model: TheWorld, processor, get_main_device):
     """Test that both models generate identical token sequences (text-only)."""
     prompt = "What is the capital of France?"
 
@@ -112,7 +77,7 @@ def test_same_generated_tokens(gemma_model: Gemma3ForConditionalGeneration, thew
     print("✓ Generated tokens match exactly")
 
 
-def test_same_logits(gemma_model: Gemma3ForConditionalGeneration, theworld_model: TheWorld, processor):
+def test_same_logits(gemma_model: Gemma3ForConditionalGeneration, theworld_model: TheWorld, processor, get_main_device):
     """Test that both models produce nearly identical logits (text-only)."""
     prompt = "The sky is"
 
@@ -150,7 +115,7 @@ def test_same_logits(gemma_model: Gemma3ForConditionalGeneration, theworld_model
     print("✓ Logits match within tolerance")
 
 
-def test_same_next_token_prediction(gemma_model, theworld_model, processor):
+def test_same_next_token_prediction(gemma_model, theworld_model, processor, get_main_device):
     """Test that both models predict the same next token (text-only)."""
     prompt = "Paris is the capital of"
 
@@ -205,7 +170,7 @@ def test_no_world_tokens_when_disabled(theworld_model, processor):
     print("✓ No world tokens injected when enable_world=False")
 
 
-def test_multiple_prompts_consistency(gemma_model, theworld_model, processor):
+def test_multiple_prompts_consistency(gemma_model, theworld_model, processor, get_main_device):
     """Test consistency across multiple different prompts (text-only)."""
     prompts = [
         "The quick brown fox",
