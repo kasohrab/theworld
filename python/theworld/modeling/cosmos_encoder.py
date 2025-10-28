@@ -47,7 +47,12 @@ class CosmosEncoder(nn.Module):
         self.freeze_vae = freeze_vae
 
         # Projection: 16-dim latent → 2304-dim Gemma embedding space
-        self.world_projection = nn.Linear(cosmos_dim, gemma_dim, dtype=torch.bfloat16)
+        # 2-layer MLP
+        self.world_projection = nn.Sequential(
+            nn.Linear(cosmos_dim, gemma_dim, dtype=torch.bfloat16), 
+            nn.GELU(),
+            nn.Linear(gemma_dim, gemma_dim, dtype=torch.bfloat16),
+            nn.GELU())
         self.world_projection.to(device)
 
     def forward(self, images: List[Image.Image]) -> Tensor:
@@ -129,6 +134,8 @@ class CosmosEncoder(nn.Module):
         assert projected_embeds.dim() == 3, f"Expected 3D tensor, got {projected_embeds.dim()}D"
         assert projected_embeds.size(0) == batch_size, f"Batch size mismatch in output"
         assert projected_embeds.size(1) == num_tokens, f"Token count mismatch"
-        assert projected_embeds.size(2) == self.world_projection.out_features, f"Projection dim mismatch"
+        # For Sequential (2-layer MLP), get output dim from last Linear layer
+        expected_dim = self.world_projection[-2].out_features  # -2 because last is GELU
+        assert projected_embeds.size(2) == expected_dim, f"Projection dim mismatch"
 
         return projected_embeds

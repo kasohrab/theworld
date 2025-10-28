@@ -164,9 +164,7 @@ def theworld_collate_fn(
             {"role": "user", "content": [{"type": "image", "image": image}, {"type": "text", "text": text}]},
         ]
         if label is not None:
-            # --- THIS IS THE FIX ---
             messages_full.append({"role": "assistant", "content": [{"type": "text", "text": label}]})
-            # --------------------
 
         # Tokenize the full conversation to get the combined input_ids
         full_tokenized = processor.apply_chat_template(
@@ -257,7 +255,7 @@ def create_theworld_collator(model):
             batch,
             processor=model.processor,
             tokenizer=model.processor.tokenizer,
-            max_length=2048,
+            max_length=8192,
         )
 
     return collate_fn

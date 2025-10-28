@@ -1,0 +1,51 @@
+{
+  "model_name": "google/gemma-3-4b-it",
+  "cosmos_model_name": "nvidia/Cosmos-Predict2-2B-Video2World",
+  "num_world_steps": 0,
+
+  "dataset_name": "llava_pretrain",
+  "image_folder": "data/llava-cc3m/images",
+  "num_samples": null,
+  "streaming": false,
+
+  "freeze_gemma_vision": true,
+  "freeze_gemma_language": true,
+  "freeze_cosmos_vae": true,
+
+  "learning_rate": 0.0001,
+  "batch_size": 2,
+  "gradient_accumulation_steps": 8,
+  "num_epochs": 3,
+  "max_steps": null,
+
+  "use_gradient_checkpointing": true,
+  "mixed_precision": "bf16",
+
+  "output_dir": "./checkpoints/llava_pretrain_full",
+  "save_steps": 100,
+  "save_total_limit": 5,
+  "save_safetensors": true,
+
+  "do_eval": true,
+  "eval_steps": 100,
+  "eval_batch_size": null,
+
+  "logging_steps": 2,
+  "log_to_tensorboard": true,
+  "log_to_wandb": false,
+  "wandb_project": null,
+  "wandb_run_name": null,
+
+  "warmup_steps": 100,
+  "weight_decay": 0.01,
+  "max_grad_norm": 1.0,
+  "num_workers": 4,
+
+  "deepspeed_config": null,
+
+  "push_to_hub": true,
+  "hub_model_id": "kasohrab/theworld-llava-pretrain",
+  "hub_strategy": "every_save",
+  "hub_private_repo": false,
+  "hf_token": null
+}

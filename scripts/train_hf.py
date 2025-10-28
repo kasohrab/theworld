@@ -115,6 +115,7 @@ def load_datasets(config: TrainingConfig):
     Supports:
     - DataComp-1B (dataset_name="datacomp")
     - VSR (dataset_name="vsr")
+    - LLaVA-CC3M-Pretrain-595K (dataset_name="llava_pretrain")
     - Custom datasets (dataset_name="custom")
 
     Args:
@@ -123,7 +124,7 @@ def load_datasets(config: TrainingConfig):
     Returns:
         Tuple of (train_dataset, eval_dataset)
     """
-    from theworld.datasets import load_datacomp, load_vsr
+    from theworld.datasets import load_datacomp, load_vsr, load_llava_pretrain
 
     # Authenticate with HuggingFace if token provided
     if config.hf_token:
@@ -190,6 +191,37 @@ def load_datasets(config: TrainingConfig):
                 hf_token=config.hf_token,
             )
 
+    elif config.dataset_name == "llava_pretrain":
+        print(f"Loading LLaVA-CC3M-Pretrain-595K dataset...")
+        print(f"  Samples: {config.num_samples if config.num_samples else 'all (595K)'}")
+
+        # Get image folder from config (or use default)
+        image_folder = getattr(config, "image_folder", None)
+        if image_folder is None:
+            image_folder = "data/llava-cc3m/images"
+
+        # Load full dataset
+        full_dataset = load_llava_pretrain(
+            image_folder=image_folder,
+            num_samples=config.num_samples,
+            hf_token=config.hf_token,
+            auto_download=True,
+        )
+
+        # Split into train/val (hold out 1% for validation)
+        eval_dataset = None
+        if config.do_eval:
+            from torch.utils.data import random_split
+
+            total_size = len(full_dataset)
+            val_size = max(100, int(0.01 * total_size))  # At least 100 samples, or 1% of dataset
+            train_size = total_size - val_size
+
+            train_dataset, eval_dataset = random_split(full_dataset, [train_size, val_size])
+            print(f"  Split: {train_size:,} train, {val_size:,} validation")
+        else:
+            train_dataset = full_dataset
+
     elif config.dataset_name == "custom":
         # Custom dataset loading
         # Users can modify this section for their own datasets
@@ -208,7 +240,9 @@ def load_datasets(config: TrainingConfig):
             eval_dataset = TheWorldDataset(eval_data)
 
     else:
-        raise ValueError(f"Unknown dataset_name: {config.dataset_name}. " f"Supported: 'datacomp', 'vsr', 'custom'")
+        raise ValueError(
+            f"Unknown dataset_name: {config.dataset_name}. " f"Supported: 'datacomp', 'vsr', 'llava_pretrain', 'custom'"
+        )
 
     return train_dataset, eval_dataset
 
@@ -356,7 +390,7 @@ def main():
     # Enable gradient checkpointing if configured
     if config.use_gradient_checkpointing:
         print("Enabling gradient checkpointing...")
-        model.enable_gradient_checkpointing()
+        model.gradient_checkpointing_enable()
 
     # Print trainable parameters
     trainable, total, percentage = model.get_trainable_parameters()
