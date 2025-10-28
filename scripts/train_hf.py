@@ -342,8 +342,6 @@ def main():
     else:
         print(f"  Single GPU mode: device_map='auto'")
 
-    # Use from_pretrained() instead of constructor for proper weight loading
-    # Note: num_world_steps is an inference parameter, not an initialization parameter
     model = TheWorld.from_pretrained(
         config.model_name,
         enable_world=True,
