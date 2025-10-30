@@ -14,9 +14,10 @@
 
   "learning_rate": 0.0001,
   "batch_size": 1,
-  "gradient_accumulation_steps": 4,
+  "gradient_accumulation_steps": 1,
   "num_epochs": 2,
   "max_steps": null,
+  "max_seq_length": 2048,
 
   "use_gradient_checkpointing": false,
   "mixed_precision": "bf16",
@@ -26,8 +27,8 @@
   "save_total_limit": 5,
   "save_safetensors": true,
 
-  "do_eval": true,
-  "eval_steps": 100,
+  "do_eval": false,
+  "eval_steps": null,
   "eval_batch_size": null,
 
   "logging_steps": 2,

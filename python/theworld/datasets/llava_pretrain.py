@@ -212,9 +212,16 @@ class LLaVAPretrainDataset(TorchDataset):
         text = human_msg.replace("<image>", "").strip()
         label = gpt_msg.strip()
 
-        # Load image (pre-filtered, so we know it exists)
+        # Load image with error handling for corrupted files
         image_path = self.image_folder / image_filename
-        image = Image.open(image_path).convert("RGB")
+        try:
+            image = Image.open(image_path).convert("RGB")
+        except (Image.UnidentifiedImageError, OSError, IOError) as e:
+            # Image file exists but is corrupted/truncated/invalid
+            # Skip to next sample (wraparound at end)
+            print(f"⚠ Warning: Skipping corrupted image at index {idx}: {image_filename} ({e})")
+            next_idx = (idx + 1) % len(self.hf_dataset)
+            return self[next_idx]
 
         return {
             "image": image,

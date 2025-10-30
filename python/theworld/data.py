@@ -9,8 +9,11 @@ from typing import List, Dict, Any, TYPE_CHECKING, Optional, TypedDict
 from PIL import Image
 import numpy as np
 from pathlib import Path
+import logging
 
 from .constants import BOS_TOKEN_ID, IMAGE_SOFT_TOKEN_ID
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from transformers import AutoProcessor, AutoTokenizer
@@ -146,8 +149,20 @@ def theworld_collate_fn(
     2. Tokenizing the full sequence to get input_ids.
     3. Creating a copy for the labels.
     4. Masking out the prompt portion of the labels with -100.
-    5. Padding all tensors to the maximum length in the batch.
+    5. Filtering out samples that exceed max_length.
+    6. Padding all tensors to the maximum length in the batch.
+
+    Args:
+        batch: List of samples with image, text, and label
+        processor: Gemma processor for tokenization and image processing
+        tokenizer: Tokenizer instance
+        max_length: Maximum sequence length (samples exceeding this are skipped)
     """
+    images_filtered = []
+    texts_filtered = []
+    labels_filtered = []
+
+    # First pass: filter out samples that exceed max_length
     images = [item["image"].convert("RGB") if item["image"].mode != "RGB" else item["image"] for item in batch]
     texts = [item["text"] for item in batch]
     labels_raw = [item.get("label") for item in batch]
@@ -175,21 +190,26 @@ def theworld_collate_fn(
             return_tensors="pt",
         )
         full_ids = full_tokenized["input_ids"][0]
+        seq_len = len(full_ids)
 
-        # 2. Create and tokenize ONLY the prompt part to find its length
-        messages_prompt = [
-            {"role": "user", "content": [{"type": "image", "image": image}, {"type": "text", "text": text}]},
+        # Skip samples that exceed max_length
+        if seq_len > max_length:
+            logger.warning(f"Skipping sample with sequence length {seq_len} > max_length {max_length}")
+            continue
+
+        # 2. Calculate prompt length using tokenizer only (avoid re-processing image)
+        # Create text-only messages for prompt length calculation
+        messages_prompt_text = [
+            {"role": "user", "content": text},
         ]
-        # We add a generation prompt to ensure the template includes the assistant markers
-        # (e.g., <start_of_turn>model\n) so we know where the prompt ends.
-        prompt_tokenized = processor.apply_chat_template(
-            messages_prompt,
+        # Use tokenizer directly (no image processing) with chat template
+        prompt_ids = processor.tokenizer.apply_chat_template(
+            messages_prompt_text,
             tokenize=True,
             add_generation_prompt=True,
-            return_dict=True,
             return_tensors="pt",
         )
-        prompt_len = prompt_tokenized["input_ids"].shape[1]
+        prompt_len = prompt_ids.shape[1]
 
         # 3. Create labels: a copy of the full IDs, but with the prompt masked out
         current_labels = full_ids.clone()
@@ -198,6 +218,20 @@ def theworld_collate_fn(
         input_ids_list.append(full_ids)
         labels_list.append(current_labels)
         pixel_values_list.append(full_tokenized.get("pixel_values"))
+        images_filtered.append(image)
+
+    # Handle empty batch (all samples filtered out)
+    if len(input_ids_list) == 0:
+        logger.error(
+            f"All {len(batch)} samples in batch exceeded max_length {max_length}. "
+            f"This should be rare - consider increasing max_length or checking your data. "
+            f"Batch will be skipped."
+        )
+        # Return None to signal the trainer to skip this batch
+        # Trainer will handle this gracefully
+        raise ValueError(
+            f"All {len(batch)} samples exceeded max_length {max_length}. " f"Increase max_length or check dataset."
+        )
 
     # 4. Pad everything to the max length of the batch
     max_len = max(len(ids) for ids in input_ids_list)
@@ -227,11 +261,14 @@ def theworld_collate_fn(
         "attention_mask": attention_mask,
         "pixel_values": pixel_values,
         "labels": labels_padded,
-        "images": images,
+        "images": images_filtered,
     }
 
 
-def create_theworld_collator(model):
+def create_theworld_collator(
+    model,
+    max_length: int = 2048,
+):
     """Create a collate function bound to a specific model instance.
 
     This is a convenience function that creates a collator with the model's
@@ -239,6 +276,7 @@ def create_theworld_collator(model):
 
     Args:
         model: TheWorld model instance
+        max_length: Maximum sequence length (samples exceeding this are skipped)
 
     Returns:
         Collate function that can be passed to DataLoader or Trainer
@@ -246,7 +284,7 @@ def create_theworld_collator(model):
     Example:
         >>> from theworld import TheWorld
         >>> model = TheWorld("google/gemma-3-4b-it")
-        >>> collate_fn = create_theworld_collator(model)
+        >>> collate_fn = create_theworld_collator(model, max_length=2048)
         >>> trainer = Trainer(..., data_collator=collate_fn)
     """
 
@@ -255,7 +293,7 @@ def create_theworld_collator(model):
             batch,
             processor=model.processor,
             tokenizer=model.processor.tokenizer,
-            max_length=8192,
+            max_length=max_length,
         )
 
     return collate_fn

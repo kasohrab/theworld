@@ -30,7 +30,8 @@ import sys
 from pathlib import Path
 
 import torch
-from transformers import Trainer, TrainingArguments
+from torch.profiler import profile, ProfilerActivity, schedule
+from transformers import Trainer, TrainingArguments, TrainerCallback
 from huggingface_hub import snapshot_download
 from typing import Optional
 
@@ -86,8 +87,50 @@ def parse_args():
         action="store_true",
         help="Use streaming mode for large datasets",
     )
+    parser.add_argument(
+        "--profile",
+        action="store_true",
+        help="Enable PyTorch profiler for performance analysis",
+    )
+    parser.add_argument(
+        "--profile_steps",
+        type=int,
+        default=10,
+        help="Number of steps to profile (default: 10)",
+    )
+    parser.add_argument(
+        "--max_steps",
+        type=int,
+        default=None,
+        help="Maximum training steps (overrides config)",
+    )
 
     return parser.parse_args()
+
+
+class ProfilerCallback(TrainerCallback):
+    """Callback to integrate PyTorch profiler with HuggingFace Trainer.
+
+    Steps the profiler after each training step and prints summary at the end.
+    """
+
+    def __init__(self, profiler):
+        self.profiler = profiler
+
+    def on_step_end(self, args, state, control, **kwargs):
+        """Step profiler after each training step."""
+        self.profiler.step()
+
+    def on_train_end(self, args, state, control, **kwargs):
+        """Print profiling summary when training ends."""
+        print("\n" + "=" * 80)
+        print("PROFILING SUMMARY (Top 20 operations by CUDA time)")
+        print("=" * 80)
+        print(self.profiler.key_averages().table(sort_by="cuda_time_total", row_limit=20))
+        print("=" * 80)
+        print(f"Trace saved to: {args.output_dir}/profile_traces")
+        print("View in TensorBoard: tensorboard --logdir {}/profile_traces".format(args.output_dir))
+        print("=" * 80 + "\n")
 
 
 def load_config(config_path: str) -> TrainingConfig:
@@ -320,6 +363,8 @@ def main():
         config.num_samples = args.num_samples
     if args.streaming:
         config.streaming = args.streaming
+    if args.max_steps is not None:
+        config.max_steps = args.max_steps
 
     # Get HF token from environment if not provided
     if not config.hf_token:
@@ -392,7 +437,11 @@ def main():
             print(f"  Eval size: streaming (no length)")
 
     # Create data collator
-    data_collator = create_theworld_collator(model)
+    data_collator = create_theworld_collator(
+        model,
+        max_length=config.max_seq_length,
+    )
+    print(f"  Max sequence length: {config.max_seq_length}")
 
     # Setup training arguments
     print(f"\nSetting up HuggingFace Trainer...")
@@ -472,6 +521,38 @@ def main():
         data_collator=data_collator,
     )
 
+    # Setup profiler if enabled
+    profiler_context = None
+    if args.profile:
+        print("\n" + "=" * 60)
+        print("PROFILING ENABLED")
+        print("=" * 60)
+        print(f"  Warmup: 2 steps")
+        print(f"  Active profiling: {args.profile_steps} steps")
+        print(f"  Total steps to run: {args.profile_steps + 3}")
+        print(f"  Output: {config.output_dir}/profile_traces")
+        print("=" * 60 + "\n")
+
+        profiler_context = profile(
+            activities=[
+                ProfilerActivity.CPU,
+                ProfilerActivity.CUDA,
+            ],
+            schedule=schedule(
+                wait=1,  # Skip first step (initialization)
+                warmup=2,  # Warmup 2 steps
+                active=args.profile_steps,  # Profile N steps
+                repeat=1,  # Run once
+            ),
+            on_trace_ready=torch.profiler.tensorboard_trace_handler(f"{config.output_dir}/profile_traces"),
+            record_shapes=True,
+            profile_memory=True,
+            with_stack=True,
+        )
+
+        # Add profiler callback
+        trainer.add_callback(ProfilerCallback(profiler_context))
+
     # Resume from checkpoint if specified (supports both local paths and Hub model IDs)
     resume_checkpoint = None
     if config.resume_from_checkpoint:
@@ -487,7 +568,12 @@ def main():
     print(f"\nStarting training...")
     print("=" * 60)
 
-    trainer.train(resume_from_checkpoint=resume_checkpoint)
+    # Wrap training with profiler context if enabled
+    if profiler_context is not None:
+        with profiler_context:
+            trainer.train(resume_from_checkpoint=resume_checkpoint)
+    else:
+        trainer.train(resume_from_checkpoint=resume_checkpoint)
 
     # Save final model
     print(f"\nSaving final model to {config.output_dir}/final")
