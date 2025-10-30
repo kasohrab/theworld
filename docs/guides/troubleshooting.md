@@ -230,12 +230,19 @@ if torch.isnan(loss) or torch.isinf(loss):
 
 **3. Use multiple GPUs**
 ```bash
-# Data parallel
-torchrun --nproc_per_node=4 scripts/train_hf.py --config config.json
+# Multi-GPU DDP (projection-only or + vision)
+accelerate launch --config_file configs/accelerate/multi_gpu_ddp.yaml \
+    scripts/train_hf.py --config config.json
 
-# DeepSpeed
-deepspeed --num_gpus=4 scripts/train_hf.py --config config_deepspeed.json
+# Multi-GPU FSDP (full model training)
+accelerate launch --config_file configs/accelerate/multi_gpu_fsdp.yaml \
+    scripts/train_hf.py --config config.json
+
+# Auto-detect optimal strategy
+accelerate launch scripts/train_hf.py --config config.json
 ```
+
+See [Distributed Training Guide](../training/distributed.md) for details.
 
 ---
 

@@ -364,7 +364,7 @@ python scripts/train_hf.py --config configs/stage3_language.json
 | Stage 1 | 20-24 GB | batch=4, grad_accum=4 |
 | Stage 2 | 35-40 GB | batch=4, grad_accum=4 |
 | Stage 3 | 56-60 GB | batch=2, grad_accum=8 + grad_checkpoint |
-| Stage 4 | 80-84 GB | Use distributed training or DeepSpeed |
+| Stage 4 | 80-84 GB | Use Accelerate FSDP (multi-GPU) |
 
 ### Save Strategy
 
@@ -461,8 +461,8 @@ print(response)
 ```
 
 **Stage 4 OOM:**
-- Use distributed training (multi-GPU)
-- See `docs/deepspeed_zero_analysis.md` for DeepSpeed ZeRO
+- Use Accelerate FSDP (multi-GPU)
+- See `docs/training/distributed.md` for Accelerate configuration
 
 ### Performance Degradation
 

@@ -20,7 +20,7 @@ Welcome to the **TheWorld** documentation! TheWorld is a novel fused vision-lang
 - **[Training Guide](training/README.md)** - Overview and quickstart
 - **[Infrastructure](training/infrastructure.md)** - Training design and setup
 - **[Multi-Stage Training](training/multi-stage.md)** - Progressive unfreezing strategy
-- **[Distributed Training](training/distributed.md)** - DeepSpeed and multi-GPU
+- **[Distributed Training](training/distributed.md)** - Accelerate and multi-GPU
 - **[Hub Upload](training/hub-upload.md)** - Publishing to HuggingFace
 - **[Datasets](training/datasets/)** - DataComp, SpatialRGPT, and more
 

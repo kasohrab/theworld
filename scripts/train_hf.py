@@ -86,12 +86,6 @@ def parse_args():
         action="store_true",
         help="Use streaming mode for large datasets",
     )
-    parser.add_argument(
-        "--local_rank",
-        type=int,
-        default=-1,
-        help="Local rank for distributed training",
-    )
 
     return parser.parse_args()
 
@@ -348,8 +342,6 @@ def main():
     print(f"  Gradient checkpointing: {config.use_gradient_checkpointing}")
     print(f"  Mixed precision: {config.mixed_precision}")
     print(f"  Save format: {'safetensors' if config.save_safetensors else 'pickle'}")
-    if config.deepspeed_config:
-        print(f"  DeepSpeed config: {config.deepspeed_config}")
 
     # Initialize model
     print(f"\nInitializing model...")
@@ -357,24 +349,7 @@ def main():
     print(f"  World embeddings: enabled")
     print(f"  Cosmos model: {config.cosmos_model_name}")
     print(f"  num_world_steps: {config.num_world_steps}")
-
-    # Detect distributed training mode (DDP, DeepSpeed, etc.)
-    # device_map="auto" is incompatible with ANY distributed training
-    is_distributed = (
-        args.local_rank != -1  # torchrun/DDP sets this
-        or config.deepspeed_config is not None  # DeepSpeed
-        or os.environ.get("WORLD_SIZE", "1") != "1"  # Alternative check
-    )
-
-    use_device_map = None if is_distributed else "auto"
-    if is_distributed:
-        if config.deepspeed_config:
-            print(f"  Distributed mode: DeepSpeed ZeRO")
-        else:
-            print(f"  Distributed mode: DDP (torchrun)")
-        print(f"  ⚠ Letting distributed framework handle device placement (device_map=None)")
-    else:
-        print(f"  Single GPU mode: device_map='auto'")
+    print(f"  Accelerate will handle device placement automatically")
 
     model = TheWorld.from_pretrained(
         config.model_name,
@@ -383,8 +358,8 @@ def main():
         freeze_gemma_vision=config.freeze_gemma_vision,
         freeze_gemma_language=config.freeze_gemma_language,
         freeze_cosmos_vae=config.freeze_cosmos_vae,
-        dtype=torch.bfloat16 if config.mixed_precision == "bf16" else torch.float32,
-        device_map=use_device_map,
+        torch_dtype=torch.bfloat16 if config.mixed_precision == "bf16" else torch.float32,
+        # No device_map - let Accelerate handle device placement
     )
 
     # Enable gradient checkpointing if configured
@@ -422,13 +397,6 @@ def main():
     # Setup training arguments
     print(f"\nSetting up HuggingFace Trainer...")
 
-    # Check if model already uses device_map (e.g., from device_map="auto")
-    # If so, we need to prevent Trainer from trying to move it
-    has_device_map = hasattr(model, "hf_device_map")
-    if has_device_map:
-        print("  ⚠ Model uses device_map='auto' - Trainer will skip device placement")
-        print(f"  Device map: {model.hf_device_map}")
-
     # Determine mixed precision settings
     fp16 = config.mixed_precision == "fp16"
     bf16 = config.mixed_precision == "bf16"
@@ -448,8 +416,6 @@ def main():
         # Mixed precision
         fp16=fp16,
         bf16=bf16,
-        # DeepSpeed
-        deepspeed=config.deepspeed_config if config.deepspeed_config else None,
         # Checkpointing
         save_strategy="steps",
         save_steps=config.save_steps,
@@ -472,9 +438,8 @@ def main():
         # Other
         dataloader_num_workers=config.num_workers,
         remove_unused_columns=False,  # Important: don't remove our custom columns
-        # Distributed training
-        ddp_find_unused_parameters=False if has_device_map else None,
-        local_rank=args.local_rank,
+        # Distributed training - needed because we freeze most parameters
+        ddp_find_unused_parameters=True,
     )
 
     # Setup WandB if configured

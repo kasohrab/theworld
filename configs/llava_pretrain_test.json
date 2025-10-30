@@ -41,8 +41,6 @@
   "max_grad_norm": 1.0,
   "num_workers": 4,
 
-  "deepspeed_config": null,
-
   "push_to_hub": false,
   "hub_model_id": null,
   "hub_strategy": "every_save",

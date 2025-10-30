@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 from PIL import Image
-from typing import List, cast
+from typing import List, Optional, cast
 from diffusers.models.autoencoders.autoencoder_kl import AutoencoderKL
 from diffusers.models.modeling_outputs import AutoencoderKLOutput
 from torch import Tensor
@@ -37,10 +37,16 @@ class CosmosEncoder(nn.Module):
         cosmos_vae: AutoencoderKL,
         cosmos_dim: int = 16,
         gemma_dim: int = 2304,
-        device: str = "cuda",
+        device: Optional[str] = None,
         freeze_vae: bool = True,
     ):
         super().__init__()
+
+        # Auto-detect device if not provided
+        # Accelerate will handle proper device placement in distributed setups
+        if device is None:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+
         self.cosmos_vae = cosmos_vae
         self.device: str = device
         self.cosmos_dim = cosmos_dim

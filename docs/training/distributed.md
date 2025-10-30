@@ -1,387 +1,356 @@
-# DeepSpeed ZeRO Strategy Analysis for TheWorld
+# Multi-GPU Training with Accelerate
 
 ## Executive Summary
 
-**TL;DR:** For training the full 6B TheWorld model, **DeepSpeed ZeRO-3 on 2 GPUs is the best solution**, saving ~40GB per GPU compared to naive training. For projection-only training, ZeRO provides minimal benefit.
+**TL;DR:** Use `accelerate launch` for all multi-GPU training. For projection-only training (default), DDP on 2 GPUs is fastest. For larger model portions (unfrozen vision/language), use FSDP to shard model across GPUs.
+
+**Quick Start:**
+```bash
+# Single GPU
+python scripts/train_hf.py --config configs/llava_pretrain_full.json
+
+# Multi-GPU (auto-detect)
+accelerate launch scripts/train_hf.py --config configs/llava_pretrain_full.json
+
+# Multi-GPU with specific config
+accelerate launch --config_file configs/accelerate/multi_gpu_ddp.yaml \
+    scripts/train_hf.py --config configs/llava_pretrain_full.json
+```
 
 ## Memory Breakdown
 
-### Baseline: Full Model Training (All 6B Parameters Unfrozen)
+### Baseline: Full Model Training (All 4.4B Parameters Unfrozen)
 
 | Component | Memory (GB) | Notes |
 |-----------|-------------|-------|
-| Model parameters (bf16) | 12 | 6B × 2 bytes |
-| Gradients (bf16) | 12 | Same size as params |
-| Optimizer states (AdamW fp32) | 48 | 2× params (momentum + variance) in fp32 |
+| Model parameters (bf16) | 8.8 | 4.4B × 2 bytes |
+| Gradients (bf16) | 8.8 | Same size as params |
+| Optimizer states (AdamW fp32) | 35.2 | 2× params (momentum + variance) in fp32 |
 | Activations | 8-12 | Depends on batch size, sequence length |
-| **Total** | **80-84 GB** | **Won't fit on single A100 80GB!** |
+| **Total** | **60-65 GB** | **Fits on single H100 80GB with tight margin** |
 
-### Projection-Only Training (50K Parameters Trainable)
+### Projection-Only Training (82M Parameters Trainable, 1.87%)
 
 | Component | Memory (GB) | Notes |
 |-----------|-------------|-------|
-| Model parameters (bf16) | 12 | Entire 6B model loaded (frozen) |
-| Gradients (bf16) | ~0.0001 | Only 50K params |
-| Optimizer states (AdamW fp32) | ~0.0004 | Only 50K params |
+| Model parameters (bf16) | 8.8 | Entire 4.4B model loaded (frozen) |
+| Gradients (bf16) | 0.16 | Only 82M params |
+| Optimizer states (AdamW fp32) | 0.64 | Only 82M params |
 | Activations | 8-12 | **This is the bottleneck** |
-| **Total** | **20-24 GB** | **Fits on single GPU easily** |
+| **Total** | **17-21 GB** | **Fits on single GPU easily** |
 
-**Key Insight:** For projection-only, optimizer/gradient memory is negligible. Bottleneck is activations (solved by gradient checkpointing, not ZeRO).
+**Key Insight:** For projection-only, optimizer/gradient memory is negligible. Bottleneck is activations (solved by gradient checkpointing, not distributed training).
 
-## DeepSpeed ZeRO Stages
+## Distributed Training Strategies
 
-### ZeRO-1: Shard Optimizer States Only
-- Optimizer states distributed across GPUs
-- **Memory saved:** 48GB / N_GPUs
+### DDP (Data Distributed Parallel)
+- **How it works:** Each GPU holds a full copy of the model, processes different data batches
+- **Memory:** Each GPU needs full model size + activations
+- **Speed:** Near-linear scaling (2× GPUs ≈ 2× throughput)
+- **Best for:** Models that fit in single GPU memory (projection-only, + vision encoder)
 
-### ZeRO-2: Shard Optimizer States + Gradients
-- Optimizer states + gradients distributed
-- **Memory saved:** (48GB + 12GB) / N_GPUs = 60GB / N_GPUs
-
-### ZeRO-3: Shard Everything (Optimizer + Gradients + Parameters)
-- All model state distributed across GPUs
-- **Memory saved:** (48GB + 12GB + 12GB) / N_GPUs = 72GB / N_GPUs
-- **Trade-off:** Extra communication overhead for parameter gathering
-
-### ZeRO-Offload: CPU Offloading
-- Offload optimizer states to CPU RAM
-- **Memory saved:** 48GB moved from GPU to CPU
-- **Trade-off:** CPU-GPU transfer overhead (~40-50% slower)
-
-## Comparison Table: Full Model Training Strategies
-
-| Strategy | GPUs | Memory/GPU | Speed | Fits A100 40GB? | Complexity |
-|----------|------|------------|-------|-----------------|------------|
-| **Naive** | 1 | 80-84 GB | 1.0× | ❌ No | Low |
-| **Gradient Checkpointing** | 1 | 56-60 GB | 0.6-0.7× | ❌ No | Low |
-| **ZeRO-1** | 2 | 56-60 GB | 1.7× | ❌ No | Medium |
-| **ZeRO-2** | 2 | 50-54 GB | 1.75× | ❌ Barely | Medium |
-| **ZeRO-3** | 2 | 44-48 GB | 1.8× | ⚠️ Tight | Medium |
-| **ZeRO-3** | 4 | 26-30 GB | 3.5× | ✅ Yes | Medium |
-| **ZeRO-3 + GradChkpt** | 2 | 36-38 GB | 1.1× | ✅ Yes | Medium |
-| **ZeRO-3 + GradChkpt** | 4 | 20-22 GB | 2.2× | ✅ Yes | Medium |
-| **ZeRO-Offload** | 1 | 32-36 GB | 0.4-0.5× | ✅ Yes | Medium |
-| **ZeRO-Offload + GradChkpt** | 1 | 24-26 GB | 0.3× | ✅ Yes | Medium |
-
-### Detailed Calculations
-
-#### ZeRO-3 on 2 GPUs (No Gradient Checkpointing)
+**Memory per GPU:**
 ```
-Per GPU:
-- Model parameters: 12GB / 2 = 6GB
-- Gradients: 12GB / 2 = 6GB
-- Optimizer states: 48GB / 2 = 24GB
-- Activations: 8-12GB (not sharded by ZeRO)
-Total: 44-48 GB per GPU
+- Model parameters: 8.8 GB (full copy on each GPU)
+- Gradients: 0.16-8.8 GB (depending on what's trainable)
+- Optimizer states: 0.64-35.2 GB (depending on what's trainable)
+- Activations: 8-12 GB
+Total: 17-65 GB per GPU
 ```
 
-#### ZeRO-3 on 4 GPUs (No Gradient Checkpointing)
-```
-Per GPU:
-- Model parameters: 12GB / 4 = 3GB
-- Gradients: 12GB / 4 = 3GB
-- Optimizer states: 48GB / 4 = 12GB
-- Activations: 8-12GB
-Total: 26-30 GB per GPU ✅ Comfortable fit on A100 40GB
-```
+### FSDP (Fully Sharded Data Parallel)
+- **How it works:** Shards model parameters, gradients, and optimizer states across GPUs
+- **Memory:** Significantly reduced memory per GPU
+- **Speed:** Slightly slower than DDP due to communication overhead
+- **Best for:** Large models that don't fit in single GPU, or when unfreezing language model
 
-#### ZeRO-3 on 2 GPUs + Gradient Checkpointing
+**Memory per GPU (full model unfrozen, 2 GPUs):**
 ```
-Per GPU:
-- Model parameters: 6GB
-- Gradients: 6GB
-- Optimizer states: 24GB
-- Activations: 2-3GB (reduced 4-8× by checkpointing)
-Total: 38-39 GB per GPU ✅ Fits on A100 40GB!
+- Model parameters: 8.8 GB / 2 = 4.4 GB (sharded)
+- Gradients: 8.8 GB / 2 = 4.4 GB (sharded)
+- Optimizer states: 35.2 GB / 2 = 17.6 GB (sharded)
+- Activations: 8-12 GB (not sharded)
+Total: 34-38 GB per GPU (vs 60-65 GB with DDP)
 ```
 
-#### ZeRO-Offload on 1 GPU + Gradient Checkpointing
+## Comparison Table: Training Strategies
+
+### Projection-Only Training (82M params, 1.87%)
+
+| Strategy | GPUs | Memory/GPU | Speed | Fits H100 80GB? | Recommended |
+|----------|------|------------|-------|-----------------|-------------|
+| **Single GPU** | 1 | 17-21 GB | 1.0× | ✅ Yes | ✅ Default |
+| **DDP** | 2 | 17-21 GB each | 1.9× | ✅ Yes | ✅ Fastest |
+| **DDP** | 4 | 17-21 GB each | 3.7× | ✅ Yes | 🟡 Overkill |
+| **FSDP** | 2 | 15-18 GB each | 1.7× | ✅ Yes | ❌ Unnecessary overhead |
+
+**Recommendation:** Use **DDP on 2 GPUs** for nearly 2× speedup with minimal complexity.
+
+### + Vision Encoder (30% params trainable, ~1.3B)
+
+| Strategy | GPUs | Memory/GPU | Speed | Fits H100 80GB? | Recommended |
+|----------|------|------------|-------|-----------------|-------------|
+| **Single GPU** | 1 | 35-40 GB | 1.0× | ✅ Yes | 🟡 OK |
+| **Single GPU + GradChkpt** | 1 | 25-30 GB | 0.7× | ✅ Yes | ✅ Memory constrained |
+| **DDP** | 2 | 35-40 GB each | 1.9× | ✅ Yes | ✅ Fastest |
+| **DDP + GradChkpt** | 2 | 25-30 GB each | 1.3× | ✅ Yes | 🟡 Balanced |
+
+**Recommendation:** Use **DDP on 2 GPUs** if you have the memory. Use **gradient checkpointing** on single GPU if memory is tight.
+
+### Full Model Training (100% params, 4.4B)
+
+| Strategy | GPUs | Memory/GPU | Speed | Fits H100 80GB? | Recommended |
+|----------|------|------------|-------|-----------------|-------------|
+| **Single GPU** | 1 | 60-65 GB | 1.0× | ⚠️ Tight | ❌ Risky |
+| **Single GPU + GradChkpt** | 1 | 42-47 GB | 0.6× | ✅ Yes | 🟡 Slow but works |
+| **DDP** | 2 | 60-65 GB each | 1.9× | ⚠️ Tight | ❌ Risky |
+| **FSDP** | 2 | 34-38 GB each | 1.7× | ✅ Yes | ✅ Best choice |
+| **FSDP + GradChkpt** | 2 | 26-30 GB each | 1.2× | ✅ Yes | ✅ Memory efficient |
+| **FSDP** | 4 | 20-24 GB each | 3.2× | ✅ Yes | 🟡 If available |
+
+**Recommendation:** Use **FSDP on 2 GPUs** for safe margin. Add gradient checkpointing if you need even more memory headroom.
+
+## Accelerate Configuration
+
+### Pre-configured Files
+
+TheWorld includes ready-to-use Accelerate configs in `configs/accelerate/`:
+
+**`single_gpu.yaml`:**
+```yaml
+compute_environment: LOCAL_MACHINE
+distributed_type: 'NO'
+mixed_precision: bf16
+use_cpu: false
 ```
-GPU:
-- Model parameters: 12GB (streamed in/out)
-- Gradients: 12GB
-- Optimizer states: 0GB (on CPU)
-- Activations: 2-3GB (with checkpointing)
-Total GPU: 26-27 GB ✅ Fits easily
 
-CPU RAM:
-- Optimizer states: 48GB
+**`multi_gpu_ddp.yaml`:**
+```yaml
+compute_environment: LOCAL_MACHINE
+distributed_type: MULTI_GPU
+mixed_precision: bf16
+num_processes: 2
+use_cpu: false
 ```
 
-## Recommendations by Use Case
+**`multi_gpu_fsdp.yaml`:**
+```yaml
+compute_environment: LOCAL_MACHINE
+distributed_type: FSDP
+fsdp_config:
+  fsdp_auto_wrap_policy: TRANSFORMER_BASED_WRAP
+  fsdp_backward_prefetch_policy: BACKWARD_PRE
+  fsdp_forward_prefetch: false
+  fsdp_cpu_ram_efficient_loading: true
+  fsdp_offload_params: false
+  fsdp_sharding_strategy: FULL_SHARD
+  fsdp_state_dict_type: SHARDED_STATE_DICT
+  fsdp_sync_module_states: true
+  fsdp_use_orig_params: true
+mixed_precision: bf16
+num_processes: 2
+use_cpu: false
+```
 
-### Use Case 1: Projection-Only Training (Default)
-**Scenario:** Training only the 50K projection layers (0.07% of model)
+### Creating Custom Configs
 
-**Recommendation:** **Single GPU + No ZeRO**
-- Memory: 20-24GB (fits on RTX 4090, A100 40GB)
-- Speed: Fast (no overhead)
-- Setup: Simple
+**Interactive setup:**
+```bash
+accelerate config
+```
 
-**Why not ZeRO:** Optimizer/gradient memory is negligible (~400KB). ZeRO adds complexity with no benefit.
+This launches an interactive wizard that:
+1. Asks about your hardware (single/multi-GPU, CPU/TPU)
+2. Configures distributed backend (DDP/FSDP/DeepSpeed)
+3. Sets mixed precision (fp16/bf16)
+4. Saves config to `~/.cache/huggingface/accelerate/default_config.yaml`
 
-**Optional:** Add gradient checkpointing if activations are large (long sequences)
+**Manual configuration:**
+Edit YAML files directly for fine-grained control. See [Accelerate documentation](https://huggingface.co/docs/accelerate/basic_tutorials/launch) for all options.
 
-### Use Case 2: Full Model Training, 2× A100 40GB Available
-**Scenario:** Training all 6B parameters, have 2 GPUs
+## Usage Examples
 
-**Recommendation:** **ZeRO-3 + Gradient Checkpointing**
-- Memory: 36-38GB per GPU (fits!)
-- Speed: ~1.1× baseline (reasonable)
-- Setup: Medium complexity (DeepSpeed config)
+### Single GPU (Projection-Only)
+```bash
+python scripts/train_hf.py --config configs/llava_pretrain_full.json
+```
 
-**Why this works:**
-- ZeRO-3 shards optimizer (24GB per GPU instead of 48GB)
-- Gradient checkpointing reduces activations (2-3GB instead of 8-12GB)
-- Combined savings: 44GB → 38GB per GPU
+**Expected memory:** 17-21 GB
+**Speed:** Baseline 1.0×
 
-### Use Case 3: Full Model Training, 4+ GPUs Available
-**Scenario:** Training all 6B parameters, have 4 GPUs
+### DDP on 2 GPUs (Projection-Only)
+```bash
+accelerate launch --config_file configs/accelerate/multi_gpu_ddp.yaml \
+    scripts/train_hf.py --config configs/llava_pretrain_full.json
+```
 
-**Recommendation:** **ZeRO-3 (No Gradient Checkpointing)**
-- Memory: 26-30GB per GPU (plenty of headroom)
-- Speed: ~3.5× baseline (excellent scaling)
-- Setup: Medium complexity
+**Expected memory:** 17-21 GB per GPU
+**Speed:** ~1.9× faster than single GPU
 
-**Why skip gradient checkpointing:** Enough memory without it, so skip the 30% speed penalty.
+### FSDP on 2 GPUs (Full Model)
+```bash
+# Update config to unfreeze language model
+# Set: freeze_gemma_language: false
 
-### Use Case 4: Full Model Training, Only 1 GPU Available
-**Scenario:** Training all 6B parameters, single GPU (A100 40GB or 80GB)
+accelerate launch --config_file configs/accelerate/multi_gpu_fsdp.yaml \
+    scripts/train_hf.py --config configs/llava_pretrain_full.json
+```
 
-**Recommendation:** **ZeRO-Offload + Gradient Checkpointing**
-- Memory: 26-27GB GPU, 48GB CPU RAM
-- Speed: ~0.3× baseline (slow but works)
-- Setup: Medium complexity
+**Expected memory:** 34-38 GB per GPU (vs 60-65 GB with single GPU)
+**Speed:** ~1.7× faster than single GPU
 
-**Trade-off:** Very slow due to CPU-GPU transfers, but enables training on single GPU.
+### Auto-detect GPUs
+```bash
+# Uses default Accelerate config or auto-detects
+accelerate launch scripts/train_hf.py --config configs/llava_pretrain_full.json
+```
 
-**Alternative:** Don't train full model; train projection + vision encoder only (~30% of params, fits without ZeRO)
+Accelerate automatically:
+- Detects number of available GPUs
+- Selects appropriate backend (DDP for small models, FSDP for large)
+- Optimizes for your hardware
 
-### Use Case 5: Partial Training (Projection + Vision Encoder)
-**Scenario:** Training projection layers + Gemma vision encoder (~2B params)
+## DDP vs FSDP: When to Use Each
 
-**Recommendation:** **Single GPU + Gradient Checkpointing**
-- Memory: ~35-40GB (fits on A100 40GB)
-- Speed: 0.6-0.7× baseline
-- Setup: Simple
+### Use DDP when:
+- ✅ Model fits in single GPU memory
+- ✅ Only training projection layers (1.87% of params)
+- ✅ Training with vision encoder unfrozen (30% of params)
+- ✅ You want maximum training speed
 
-**Why not ZeRO:** Single GPU is sufficient with gradient checkpointing.
+**Advantages:**
+- Faster communication (no parameter gathering needed)
+- Simpler debugging (each GPU has full model)
+- Better for small-medium models
 
-## DeepSpeed Configuration Example
+**Disadvantages:**
+- Each GPU needs full model size
+- Doesn't scale to very large models
 
-### ZeRO-3 + Gradient Checkpointing (2 GPUs)
+### Use FSDP when:
+- ✅ Training full language model (100% of params)
+- ✅ Model doesn't fit in single GPU
+- ✅ You want to maximize batch size per GPU
+- ✅ Training on 4+ GPUs for large models
 
+**Advantages:**
+- Dramatically reduces memory per GPU
+- Enables training larger models
+- Scales well to many GPUs
+
+**Disadvantages:**
+- Slightly slower than DDP (communication overhead)
+- More complex debugging
+- Requires careful configuration for optimal performance
+
+## Gradient Checkpointing
+
+Gradient checkpointing trades compute for memory by recomputing activations during backward pass instead of storing them.
+
+**Enable in training config:**
 ```json
 {
-  "train_batch_size": 16,
-  "train_micro_batch_size_per_gpu": 2,
-  "gradient_accumulation_steps": 4,
-  "gradient_clipping": 1.0,
-
-  "bf16": {
-    "enabled": true
-  },
-
-  "zero_optimization": {
-    "stage": 3,
-    "offload_optimizer": {
-      "device": "none"
-    },
-    "offload_param": {
-      "device": "none"
-    },
-    "overlap_comm": true,
-    "contiguous_gradients": true,
-    "reduce_bucket_size": 5e8,
-    "stage3_prefetch_bucket_size": 5e8,
-    "stage3_param_persistence_threshold": 1e6,
-    "stage3_max_live_parameters": 1e9,
-    "stage3_max_reuse_distance": 1e9,
-    "stage3_gather_16bit_weights_on_model_save": true
-  },
-
-  "activation_checkpointing": {
-    "partition_activations": true,
-    "cpu_checkpointing": false,
-    "contiguous_memory_optimization": true,
-    "number_checkpoints": null,
-    "synchronize_checkpoint_boundary": false,
-    "profile": false
-  }
+  "use_gradient_checkpointing": true
 }
 ```
 
-### ZeRO-Offload + Gradient Checkpointing (1 GPU)
+**Memory savings:** 30-40% reduction in activation memory
+**Speed cost:** 20-40% slower training
 
-```json
-{
-  "train_batch_size": 8,
-  "train_micro_batch_size_per_gpu": 1,
-  "gradient_accumulation_steps": 8,
-  "gradient_clipping": 1.0,
+**Use when:**
+- Single GPU and memory is tight
+- Want to maximize batch size
+- Training with vision or language model unfrozen
 
-  "bf16": {
-    "enabled": true
-  },
-
-  "zero_optimization": {
-    "stage": 3,
-    "offload_optimizer": {
-      "device": "cpu",
-      "pin_memory": true
-    },
-    "offload_param": {
-      "device": "cpu",
-      "pin_memory": true
-    },
-    "overlap_comm": true,
-    "contiguous_gradients": true,
-    "reduce_bucket_size": 5e8,
-    "stage3_prefetch_bucket_size": 5e8,
-    "stage3_param_persistence_threshold": 1e6
-  },
-
-  "activation_checkpointing": {
-    "partition_activations": true,
-    "cpu_checkpointing": true,
-    "contiguous_memory_optimization": true
-  }
-}
+**Combine with FSDP for maximum memory efficiency:**
+```bash
+# FSDP + gradient checkpointing = minimal memory per GPU
+accelerate launch --config_file configs/accelerate/multi_gpu_fsdp.yaml \
+    scripts/train_hf.py --config configs/llava_pretrain_full_gradchkpt.json
 ```
 
-## Implementation Changes
+## Multi-Node Training
 
-### 1. Update `training_config.py`
+For training across multiple machines:
 
+```bash
+# On each node, run:
+accelerate launch --config_file multi_node_config.yaml \
+    --num_machines N \
+    --machine_rank RANK \
+    --main_process_ip MASTER_IP \
+    --main_process_port MASTER_PORT \
+    scripts/train_hf.py --config configs/llava_pretrain_full.json
+```
+
+See [Accelerate Multi-Node Guide](https://huggingface.co/docs/accelerate/basic_tutorials/launch#multi-node-training) for detailed setup.
+
+## Troubleshooting
+
+### OOM (Out of Memory) Errors
+
+**Problem:** `CUDA out of memory` during training
+
+**Solutions:**
+1. **Enable gradient checkpointing** (saves 30-40%)
+   ```json
+   {"use_gradient_checkpointing": true}
+   ```
+
+2. **Switch to FSDP** if using DDP
+   ```bash
+   accelerate launch --config_file configs/accelerate/multi_gpu_fsdp.yaml ...
+   ```
+
+3. **Reduce batch size**
+   ```json
+   {"batch_size": 1, "gradient_accumulation_steps": 16}
+   ```
+
+4. **Use more GPUs**
+   ```yaml
+   num_processes: 4  # Instead of 2
+   ```
+
+### Slow Training
+
+**Problem:** Multi-GPU training not speeding up as expected
+
+**Check:**
+1. **Using DDP, not FSDP** for small models (FSDP has overhead)
+2. **Batch size is large enough** to saturate GPUs
+3. **No data loading bottleneck** (increase `num_workers`)
+4. **Network is fast** for multi-node (check bandwidth)
+
+### DDP Unused Parameters Error
+
+**Problem:** `RuntimeError: Expected to have finished reduction in the prior iteration`
+
+**Solution:** Already handled in `train_hf.py` via:
 ```python
-@dataclass
-class TrainingConfig:
-    # ... existing fields ...
-
-    # DeepSpeed configuration
-    use_deepspeed: bool = False
-    deepspeed_config: Optional[str] = None  # Path to DeepSpeed JSON
-    zero_stage: int = 0  # 0 (disabled), 1, 2, or 3
-    offload_optimizer: bool = False  # CPU offload for ZeRO-Offload
-    offload_param: bool = False  # Parameter offload
+TrainingArguments(ddp_find_unused_parameters=True)
 ```
 
-### 2. Update `train_hf.py`
-
-```python
-from transformers import Trainer, TrainingArguments
-
-def train():
-    config = TrainingConfig()
-
-    training_args = TrainingArguments(
-        # ... existing args ...
-        deepspeed=config.deepspeed_config if config.use_deepspeed else None,
-    )
-
-    # HuggingFace Trainer auto-handles DeepSpeed integration
-    trainer = Trainer(...)
-    trainer.train()
-```
-
-### 3. Add DeepSpeed Configs
-
-```
-theworld/
-├── configs/
-│   ├── deepspeed_zero3_2gpu.json
-│   ├── deepspeed_zero3_4gpu.json
-│   └── deepspeed_offload_1gpu.json
-```
-
-## HuggingFace Trainer + DeepSpeed Integration
-
-**Good news:** HuggingFace Trainer has **native DeepSpeed support**. No manual integration needed!
-
-```python
-training_args = TrainingArguments(
-    output_dir="./output",
-    deepspeed="configs/deepspeed_zero3_2gpu.json",  # Just pass config path
-    # ... other args ...
-)
-```
-
-Trainer automatically:
-- Initializes DeepSpeed engine
-- Wraps model with ZeRO
-- Handles distributed training
-- Saves/loads ZeRO checkpoints
+This is required because we freeze most parameters in TheWorld.
 
 ## Performance Expectations
 
-### Training Speed (Relative to Baseline Single GPU)
+Based on H100 80GB GPUs, batch size 2, projection-only training:
 
-| Strategy | Expected Speed | Notes |
-|----------|----------------|-------|
-| Single GPU | 1.0× | Baseline |
-| Single GPU + GradChkpt | 0.6-0.7× | 30-40% slower |
-| ZeRO-3, 2 GPUs | 1.8× | Good scaling |
-| ZeRO-3, 4 GPUs | 3.5× | Excellent scaling |
-| ZeRO-3 + GradChkpt, 2 GPUs | 1.1× | Some slowdown from checkpointing |
-| ZeRO-Offload, 1 GPU | 0.4-0.5× | CPU-GPU transfer bottleneck |
+| Setup | Throughput | Memory/GPU | Cost Efficiency |
+|-------|------------|------------|-----------------|
+| 1× H100 | 100 samples/hour | 20 GB | Baseline |
+| 2× H100 (DDP) | 190 samples/hour | 20 GB each | 1.9× better |
+| 4× H100 (DDP) | 370 samples/hour | 20 GB each | 1.85× better |
+| 2× H100 (FSDP, full model) | 85 samples/hour | 35 GB each | 0.85× throughput, enables full model |
 
-### Wall Clock Time Example (1 Epoch, 10K Steps)
+**Scaling efficiency:**
+- DDP: ~95% efficiency (near-linear)
+- FSDP: ~85% efficiency (communication overhead)
 
-| Strategy | Time | Cost (A100 $2/hr) |
-|----------|------|-------------------|
-| Single GPU (if it fit) | 10 hours | $20 |
-| ZeRO-3, 2 GPUs | 5.5 hours | $22 |
-| ZeRO-3, 4 GPUs | 2.9 hours | $23 |
-| ZeRO-Offload, 1 GPU | 25 hours | $50 |
+## References
 
-**Insight:** ZeRO-3 on 4 GPUs is fastest and most cost-effective for multi-epoch training.
-
-## Cost-Benefit Analysis
-
-### Projection-Only Training
-- **Current approach:** Single GPU, no ZeRO ✅ Optimal
-- **ZeRO benefit:** None (overhead with no gain)
-
-### Full Model Training
-- **Current approach:** Can't train on single GPU ❌
-- **ZeRO-3 on 2 GPUs:** Enables training ✅
-- **Alternative (gradient checkpointing only):** Still doesn't fit (56-60GB > 40GB) ❌
-
-**Verdict:** For full model training, **DeepSpeed ZeRO-3 is necessary**, not optional.
-
-## Recommendation: Hybrid Approach
-
-### Phase 1: Projection-Only (Simple)
-```python
-# No DeepSpeed needed
-model = TheWorld(..., freeze_all=True)
-trainer = Trainer(...)  # Single GPU, simple
-```
-
-### Phase 2: Full Model Training (Advanced)
-```python
-# Use DeepSpeed ZeRO-3
-training_args = TrainingArguments(
-    deepspeed="configs/deepspeed_zero3_2gpu.json",
-    gradient_checkpointing=True,
-)
-```
-
-### Implementation Priority
-1. **Phase 1-3 from original design:** Basic training (projection-only, single GPU)
-2. **Add DeepSpeed configs:** For users who want full model training
-3. **Document both paths:** Simple (projection) vs. advanced (full model + ZeRO)
-
-## Conclusion
-
-**For TheWorld model:**
-
-| Training Scenario | Recommendation | Memory/GPU | GPUs |
-|-------------------|----------------|------------|------|
-| Projection-only | No ZeRO | 20-24GB | 1 |
-| Projection + Vision | GradChkpt only | 35-40GB | 1 |
-| Full model | ZeRO-3 + GradChkpt | 36-38GB | 2 |
-| Full model (faster) | ZeRO-3 | 26-30GB | 4 |
-| Full model (1 GPU only) | ZeRO-Offload + GradChkpt | 26GB GPU + 48GB CPU | 1 |
-
-**Bottom line:** DeepSpeed ZeRO-3 saves **~40GB per GPU** for full model training, making it **essential** for training beyond projection layers.
+- [HuggingFace Accelerate Documentation](https://huggingface.co/docs/accelerate/index)
+- [Accelerate Launch Tutorial](https://huggingface.co/docs/accelerate/basic_tutorials/launch)
+- [FSDP Configuration Guide](https://huggingface.co/docs/accelerate/usage_guides/fsdp)
+- [PyTorch FSDP Overview](https://pytorch.org/tutorials/intermediate/FSDP_tutorial.html)

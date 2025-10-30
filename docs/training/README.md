@@ -21,7 +21,7 @@ python scripts/train_hf.py --config configs/my_config.json
 
 - **[Infrastructure](infrastructure.md)** - Training design and setup
 - **[Multi-Stage Training](multi-stage.md)** - Progressive unfreezing strategy
-- **[Distributed Training](distributed.md)** - DeepSpeed and multi-GPU
+- **[Distributed Training](distributed.md)** - Accelerate and multi-GPU
 - **[Hub Upload](hub-upload.md)** - Publishing to HuggingFace
 - **[Datasets](datasets/)** - DataComp, SpatialRGPT, and custom datasets
 
@@ -133,25 +133,26 @@ make compare-results
 | + Vision + GradChkpt | 11.14% | 25-30GB | 1x 3090/4090 |
 | + Language | 91.04% | 56-60GB | 1x A100 |
 | + Language + GradChkpt | 91.04% | 30-35GB | 1x A100 |
-| Full model | 100% | 80GB+ | 2x A100 or DeepSpeed |
+| Full model | 100% | 80GB+ | 2x A100 with FSDP |
 
 ## Multi-GPU Training
 
-### Data Parallel (DDP)
+All multi-GPU training uses HuggingFace Accelerate for simplicity and flexibility:
 
 ```bash
-# Standard multi-GPU (each GPU has full model)
-torchrun --nproc_per_node=4 scripts/train_hf.py --config config.json
+# Auto-detect GPUs and use optimal strategy
+accelerate launch scripts/train_hf.py --config config.json
+
+# Explicit config (DDP for small models)
+accelerate launch --config_file configs/accelerate/multi_gpu_ddp.yaml \
+    scripts/train_hf.py --config config.json
+
+# FSDP for larger models (shards across GPUs)
+accelerate launch --config_file configs/accelerate/multi_gpu_fsdp.yaml \
+    scripts/train_hf.py --config config.json
 ```
 
-### DeepSpeed (Model Sharding)
-
-```bash
-# For larger configs, shard across GPUs
-deepspeed --num_gpus=4 scripts/train_hf.py --config config_deepspeed.json
-```
-
-See [Distributed Training](distributed.md) for details.
+See [Distributed Training](distributed.md) for detailed memory calculations and configuration options.
 
 ## Progressive Training Strategy
 
@@ -190,7 +191,7 @@ See [Hub Upload Guide](hub-upload.md) for details.
 - Reduce batch size
 - Enable gradient checkpointing
 - Use fewer world steps
-- Use DeepSpeed
+- Use Accelerate FSDP (multi-GPU)
 
 **Training too slow:**
 - Increase batch size (if memory allows)

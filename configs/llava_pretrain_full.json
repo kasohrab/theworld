@@ -13,12 +13,12 @@
   "freeze_cosmos_vae": true,
 
   "learning_rate": 0.0001,
-  "batch_size": 2,
-  "gradient_accumulation_steps": 8,
-  "num_epochs": 3,
+  "batch_size": 1,
+  "gradient_accumulation_steps": 4,
+  "num_epochs": 2,
   "max_steps": null,
 
-  "use_gradient_checkpointing": true,
+  "use_gradient_checkpointing": false,
   "mixed_precision": "bf16",
 
   "output_dir": "./checkpoints/llava_pretrain_full",
@@ -40,8 +40,6 @@
   "weight_decay": 0.01,
   "max_grad_norm": 1.0,
   "num_workers": 4,
-
-  "deepspeed_config": null,
 
   "push_to_hub": true,
   "hub_model_id": "kasohrab/theworld-llava-pretrain",
