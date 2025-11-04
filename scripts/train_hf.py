@@ -153,6 +153,7 @@ def load_datasets(config: TrainingConfig):
     - DataComp-1B (dataset_name="datacomp")
     - VSR (dataset_name="vsr")
     - LLaVA-CC3M-Pretrain-595K (dataset_name="llava_pretrain")
+    - SpatialRGPT OpenSpatialDataset (dataset_name="spatial_rgpt")
     - Custom datasets (dataset_name="custom")
 
     Args:
@@ -161,7 +162,7 @@ def load_datasets(config: TrainingConfig):
     Returns:
         Tuple of (train_dataset, eval_dataset)
     """
-    from theworld.datasets import load_datacomp, load_vsr, load_llava_pretrain
+    from theworld.datasets import load_datacomp, load_vsr, load_llava_pretrain, load_spatial_rgpt
 
     # Authenticate with HuggingFace if token provided
     if config.hf_token:
@@ -259,6 +260,66 @@ def load_datasets(config: TrainingConfig):
         else:
             train_dataset = full_dataset
 
+    elif config.dataset_name == "spatial_rgpt":
+        from theworld.datasets import SpatialRGPTDataset
+        import os
+
+        print(f"Loading SpatialRGPT dataset...")
+        print(f"  Samples: {config.num_samples if config.num_samples else 'all (~900K)'}")
+
+        # Get image folder from config (required for spatial_rgpt)
+        image_folder = getattr(config, "image_folder", None)
+        if image_folder is None:
+            raise ValueError(
+                "image_folder is required for spatial_rgpt dataset. "
+                "Set it in your config file to point to OpenImagesV7 directory. "
+                "Example: 'image_folder': 'data/openimages/train'"
+            )
+
+        # Check if train_dataset_path is a local JSON file or HF dataset
+        train_path = config.train_dataset_path or "a8cheng/OpenSpatialDataset"
+
+        if os.path.exists(train_path):
+            # Local JSON file
+            print(f"  Loading from local JSON: {train_path}")
+            train_dataset = SpatialRGPTDataset(
+                data_source=train_path,
+                image_folder=image_folder,
+                draw_bboxes=False,
+                num_samples=config.num_samples,
+            )
+        else:
+            # HuggingFace dataset
+            print(f"  Loading from HuggingFace: {train_path}")
+            train_dataset = load_spatial_rgpt(
+                split="train",
+                image_folder=image_folder,
+                num_samples=config.num_samples,
+                draw_bboxes=False,
+                hf_token=config.hf_token,
+            )
+
+        # Load validation split for evaluation
+        eval_dataset = None
+        if config.do_eval:
+            eval_path = config.eval_dataset_path
+            if eval_path and os.path.exists(eval_path):
+                eval_dataset = SpatialRGPTDataset(
+                    data_source=eval_path,
+                    image_folder=image_folder,
+                    draw_bboxes=False,
+                    num_samples=None,
+                )
+            else:
+                # Load from HuggingFace
+                eval_dataset = load_spatial_rgpt(
+                    split="validation",
+                    image_folder=image_folder,
+                    num_samples=None,
+                    draw_bboxes=False,
+                    hf_token=config.hf_token,
+                )
+
     elif config.dataset_name == "custom":
         # Custom dataset loading
         # Users can modify this section for their own datasets
@@ -278,7 +339,8 @@ def load_datasets(config: TrainingConfig):
 
     else:
         raise ValueError(
-            f"Unknown dataset_name: {config.dataset_name}. " f"Supported: 'datacomp', 'vsr', 'llava_pretrain', 'custom'"
+            f"Unknown dataset_name: {config.dataset_name}. "
+            f"Supported: 'datacomp', 'vsr', 'llava_pretrain', 'spatial_rgpt', 'custom'"
         )
 
     return train_dataset, eval_dataset
@@ -312,7 +374,7 @@ def resolve_checkpoint_path(checkpoint_path: str, hf_token: Optional[str] = None
             local_path = snapshot_download(
                 repo_id=checkpoint_path,
                 token=hf_token,
-                allow_patterns=["checkpoint-*/**", "pytorch_model.bin", "*.json", "*.txt"],
+                allow_patterns=["checkpoint-*/**", "*.safetensors", "pytorch_model.bin", "*.json", "*.txt"],
             )
 
             print(f"✓ Checkpoint downloaded to: {local_path}")
@@ -350,21 +412,41 @@ def main():
 
     config = load_config(args.config)
 
-    # Override config with command line args
+    # Override config with command line args (with logging)
+    overrides = {}
     if args.output_dir:
+        overrides["output_dir"] = (config.output_dir, args.output_dir)
         config.output_dir = args.output_dir
     if args.resume_from:
+        overrides["resume_from_checkpoint"] = (
+            config.resume_from_checkpoint,
+            args.resume_from,
+        )
         config.resume_from_checkpoint = args.resume_from
     if args.hf_token:
+        overrides["hf_token"] = ("[REDACTED]", "[REDACTED]")
         config.hf_token = args.hf_token
     if args.dataset:
+        overrides["dataset_name"] = (config.dataset_name, args.dataset)
         config.dataset_name = args.dataset
     if args.num_samples is not None:
+        overrides["num_samples"] = (config.num_samples, args.num_samples)
         config.num_samples = args.num_samples
     if args.streaming:
+        overrides["streaming"] = (config.streaming, args.streaming)
         config.streaming = args.streaming
     if args.max_steps is not None:
+        overrides["max_steps"] = (config.max_steps, args.max_steps)
         config.max_steps = args.max_steps
+
+    # Print command line overrides
+    if overrides:
+        print("\nCommand line overrides:")
+        for key, (old_val, new_val) in overrides.items():
+            print(f"  {key}:")
+            print(f"    Config: {old_val}")
+            print(f"    CmdLine: {new_val}")
+        print()
 
     # Get HF token from environment if not provided
     if not config.hf_token:
@@ -388,24 +470,82 @@ def main():
     print(f"  Mixed precision: {config.mixed_precision}")
     print(f"  Save format: {'safetensors' if config.save_safetensors else 'pickle'}")
 
-    # Initialize model
+    # Resolve checkpoint path if resuming (supports both local paths and Hub model IDs)
+    resume_checkpoint = None
+    if config.resume_from_checkpoint:
+        print(f"\nResolving checkpoint path: {config.resume_from_checkpoint}")
+        resume_checkpoint = resolve_checkpoint_path(config.resume_from_checkpoint, hf_token=config.hf_token)
+
+        if resume_checkpoint and os.path.exists(resume_checkpoint):
+            print(f"✓ Checkpoint found: {resume_checkpoint}")
+        else:
+            print(f"⚠ Checkpoint not found: {config.resume_from_checkpoint}")
+            print(f"  Starting fresh training instead")
+            resume_checkpoint = None
+
+    # Initialize model (from checkpoint or fresh)
     print(f"\nInitializing model...")
-    print(f"  Using from_pretrained() for proper initialization...")
+
+    if resume_checkpoint:
+        # Resume from checkpoint - two-stage loading to avoid meta tensors
+        print(f"  Loading from checkpoint: {resume_checkpoint}")
+        print(f"  This preserves all trained weights (projection layers, etc.)")
+
+        # Stage 1: Initialize full model from base (creates all real tensors)
+        model = TheWorld.from_pretrained(
+            config.model_name,
+            enable_world=True,
+            cosmos_model_name=config.cosmos_model_name,
+            freeze_gemma_vision=config.freeze_gemma_vision,
+            freeze_gemma_language=config.freeze_gemma_language,
+            freeze_cosmos_vae=config.freeze_cosmos_vae,
+            torch_dtype=torch.bfloat16 if config.mixed_precision == "bf16" else torch.float32,
+        )
+
+        # Stage 2: Load checkpoint weights on top
+        checkpoint_dir = Path(resume_checkpoint)
+        safetensors_path = checkpoint_dir / "model.safetensors"
+        bin_path = checkpoint_dir / "pytorch_model.bin"
+
+        if safetensors_path.exists():
+            from safetensors.torch import load_file
+
+            state_dict = load_file(safetensors_path)
+        elif bin_path.exists():
+            state_dict = torch.load(bin_path, weights_only=False)
+        else:
+            raise FileNotFoundError(
+                f"No checkpoint found in {checkpoint_dir}. " "Expected model.safetensors or pytorch_model.bin"
+            )
+
+        # Only load parameters that are trainable in the fresh model
+        trainable_keys = {name for name, param in model.named_parameters() if param.requires_grad}
+        checkpoint_to_load = {k: v for k, v in state_dict.items() if k in trainable_keys}
+
+        print(f"  Checkpoint weights: {len(state_dict)} total")
+        print(f"  Loading trainable weights: {len(checkpoint_to_load)}")
+
+        model.load_state_dict(checkpoint_to_load, strict=False)
+        print(f"  ✓ Checkpoint weights loaded successfully")
+    else:
+        # Fresh initialization from base pretrained models
+        print(f"  Using from_pretrained() for fresh initialization...")
+        print(f"  Base model: {config.model_name}")
+        print(f"  Cosmos model: {config.cosmos_model_name}")
+        model = TheWorld.from_pretrained(
+            config.model_name,
+            enable_world=True,
+            cosmos_model_name=config.cosmos_model_name,
+            freeze_gemma_vision=config.freeze_gemma_vision,
+            freeze_gemma_language=config.freeze_gemma_language,
+            freeze_cosmos_vae=config.freeze_cosmos_vae,
+            torch_dtype=torch.bfloat16 if config.mixed_precision == "bf16" else torch.float32,
+            # No device_map - let Accelerate handle device placement
+        )
+
     print(f"  World embeddings: enabled")
-    print(f"  Cosmos model: {config.cosmos_model_name}")
     print(f"  num_world_steps: {config.num_world_steps}")
     print(f"  Accelerate will handle device placement automatically")
-
-    model = TheWorld.from_pretrained(
-        config.model_name,
-        enable_world=True,
-        cosmos_model_name=config.cosmos_model_name,
-        freeze_gemma_vision=config.freeze_gemma_vision,
-        freeze_gemma_language=config.freeze_gemma_language,
-        freeze_cosmos_vae=config.freeze_cosmos_vae,
-        torch_dtype=torch.bfloat16 if config.mixed_precision == "bf16" else torch.float32,
-        # No device_map - let Accelerate handle device placement
-    )
 
     # Enable gradient checkpointing if configured
     if config.use_gradient_checkpointing:
@@ -552,17 +692,6 @@ def main():
 
         # Add profiler callback
         trainer.add_callback(ProfilerCallback(profiler_context))
-
-    # Resume from checkpoint if specified (supports both local paths and Hub model IDs)
-    resume_checkpoint = None
-    if config.resume_from_checkpoint:
-        resume_checkpoint = resolve_checkpoint_path(config.resume_from_checkpoint, hf_token=config.hf_token)
-
-        if resume_checkpoint and os.path.exists(resume_checkpoint):
-            print(f"Resuming from checkpoint: {resume_checkpoint}")
-        else:
-            print(f"⚠ Checkpoint not found: {config.resume_from_checkpoint}")
-            resume_checkpoint = None
 
     # Train!
     print(f"\nStarting training...")

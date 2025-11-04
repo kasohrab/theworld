@@ -217,7 +217,17 @@ def theworld_collate_fn(
 
         input_ids_list.append(full_ids)
         labels_list.append(current_labels)
-        pixel_values_list.append(full_tokenized.get("pixel_values"))
+
+        # Gemma's apply_chat_template doesn't return pixel_values, so preprocess manually
+        import sys
+
+        if "pixel_values" in full_tokenized:
+            pixel_values_list.append(full_tokenized["pixel_values"])
+        else:
+            # Fallback: use processor's image_processor to preprocess
+            processed = processor.image_processor(images=image, return_tensors="pt")
+            pixel_values_list.append(processed["pixel_values"])
+
         images_filtered.append(image)
 
     # Handle empty batch (all samples filtered out)
@@ -242,14 +252,15 @@ def theworld_collate_fn(
         pad_token_id = tokenizer.eos_token_id  # Fallback if no pad token is set
 
     # Pad input_ids and attention_mask
-    input_ids_padded = torch.full((len(batch), max_len), pad_token_id, dtype=torch.long)
-    attention_mask = torch.zeros((len(batch), max_len), dtype=torch.long)
+    # Use len(input_ids_list) not len(batch) - some samples may have been filtered for max_length
+    input_ids_padded = torch.full((len(input_ids_list), max_len), pad_token_id, dtype=torch.long)
+    attention_mask = torch.zeros((len(input_ids_list), max_len), dtype=torch.long)
     for i, ids in enumerate(input_ids_list):
         input_ids_padded[i, : len(ids)] = ids
         attention_mask[i, : len(ids)] = 1
 
     # Pad labels
-    labels_padded = torch.full((len(batch), max_len), -100, dtype=torch.long)
+    labels_padded = torch.full((len(input_ids_list), max_len), -100, dtype=torch.long)
     for i, label_ids in enumerate(labels_list):
         labels_padded[i, : len(label_ids)] = label_ids
 

@@ -699,34 +699,36 @@ train_dataset = SpatialRGPTDataset(
 
 **Full setup:**
 
-1. **Download OpenImagesV7 images**:
-   ```bash
-   mkdir -p data/openimages
-   # Download from: https://storage.googleapis.com/openimages/web/download_v7.html
-   # Follow their instructions to download train/validation splits
-   ```
+See the complete end-to-end guide: **[docs/training/spatial-rgpt.md](docs/training/spatial-rgpt.md)**
 
-2. **Update training config**:
-   ```bash
-   # Edit configs/spatial_rgpt_training.json
-   vim configs/spatial_rgpt_training.json
-   # Set "image_folder": "data/openimages/train"
-   ```
+The guide covers:
+- Downloading the 30GB training JSON from HuggingFace
+- Extracting image IDs and downloading OpenImagesV7 images
+- Training configuration and execution
+- Progressive training (train while images download)
+- Resume capability and monitoring
 
-3. **Run training**:
-   ```bash
-   python scripts/train_hf.py --config configs/spatial_rgpt_training.json
-   ```
+**Quick reference:**
+```bash
+# 1. Download training data
+huggingface-cli download a8cheng/OpenSpatialDataset --repo-type dataset --local-dir data/openspatial
 
-**Integration details:**
-- SpatialRGPT repo is included as a git submodule at `external/SpatialRGPT`
-- Dataset loader automatically handles both training and evaluation formats
-- No need to draw bounding boxes for training (regions are referenced in text)
-- Compatible with standard TheWorld training pipeline
+# 2. Extract image IDs
+python scripts/download_openimages.py --output data/required_images.txt
+
+# 3. Download images (background)
+sbatch scripts/download_openimages.sbatch
+
+# 4. Train (can start immediately)
+export HF_TOKEN=hf_your_token_here
+uv run accelerate launch --config_file configs/accelerate/multi_gpu_ddp.yaml \
+    scripts/train_hf.py --config configs/spatial_rgpt_training.json
+```
 
 **See also**:
-- `docs/evaluation/benchmarks/spatial-rgpt.md` - Evaluation on SpatialRGPT-Bench
-- `configs/spatial_rgpt_training.json` - Training configuration
+- [docs/training/spatial-rgpt.md](docs/training/spatial-rgpt.md) - Complete training guide
+- [docs/evaluation/benchmarks/spatial-rgpt.md](docs/evaluation/benchmarks/spatial-rgpt.md) - Evaluation guide
+- [configs/spatial_rgpt_training.json](configs/spatial_rgpt_training.json) - Training configuration
 
 ### Gradient Checkpointing
 

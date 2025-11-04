@@ -20,6 +20,7 @@ This module provides a PyTorch/Dataset-compatible wrapper that:
   - Optionally draws bounding boxes on images for visual grounding (eval mode)
   - Extracts ground truth from conversations field
   - Compatible with TheWorld training pipeline
+  - Uses images-first approach: only loads samples for available images
 """
 
 from typing import Optional, Dict, Any, List
@@ -51,6 +52,9 @@ def download_image(url: str, timeout: int = 5, max_retries: int = 3) -> Optional
 class SpatialRGPTDataset(TorchDataset):
     """Dataset wrapper for Spatial-RGPT evaluation and training data.
 
+    **Images-First Approach:** Only loads samples for images that exist in image_folder.
+    Scans available images at initialization, then builds JSON index for those images only.
+
     Supports two data formats:
       1. **Evaluation (SpatialRGPT-Bench)**: Has bbox, text_q, image_info fields
       2. **Training (OpenSpatialDataset)**: Has filename, conversations only
@@ -79,14 +83,14 @@ class SpatialRGPTDataset(TorchDataset):
         image_folder: Optional[str] = None,
         draw_bboxes: bool = True,
     ):
-        """Initialize dataset.
+        """Initialize dataset with images-first approach.
 
         Args:
             data_source: HuggingFace dataset, path to JSONL, or list of dicts
-            num_samples: limit samples (useful for testing)
+            num_samples: limit samples by available images (not JSON entries)
             streaming: whether HF dataset is streaming
             image_key_candidates: preference list of image keys to look for
-            image_folder: Base folder for image paths (if images are relative paths)
+            image_folder: Base folder for image paths (required for training data)
             draw_bboxes: Whether to draw bounding boxes on images (default: True)
         """
         self.num_samples = num_samples
@@ -108,34 +112,159 @@ class SpatialRGPTDataset(TorchDataset):
             self._wrap_hf_or_list(data_source)
 
     def _load_from_jsonl(self, path: Path) -> None:
+        """Load dataset with images-first approach."""
+        import json
+        import ijson
+
+        # Check if file is JSONL by reading first few chars
+        with open(path, "r", encoding="utf-8") as f:
+            first_char = f.read(1)
+            f.seek(0)
+
+            if first_char == "[":
+                # JSON array format - use images-first approach
+                print(f"  Loading JSON array with images-first approach...")
+                self._load_json_array_images_first(path)
+            else:
+                # JSONL format (one JSON object per line) - parse line by line
+                print(f"  Loading JSONL format (streaming)...")
+                self._load_jsonl_images_first(path)
+    def _load_json_array_images_first(self, path: Path) -> None:
+        """Load JSON array with images-first approach: scan images, filter JSON."""
+        import ijson
+
+        start_time = time.time()
+
+        # Step 1: Scan available images
+        if self.image_folder:
+            print(f"  Scanning image folder: {self.image_folder}")
+            scan_start = time.time()
+            available_images = set()
+            for ext in ["*.jpg", "*.jpeg", "*.png", "*.webp"]:
+                for img_path in self.image_folder.glob(ext):
+                    # Remove extension to match JSON "filename" field
+                    available_images.add(img_path.stem)
+            scan_time = time.time() - scan_start
+            print(f"  ✓ Found {len(available_images):,} images in {scan_time:.1f}s")
+        else:
+            # No image folder specified - load all samples
+            available_images = None
+
+        # Step 2: Parse JSON and keep only samples with available images
+        print(f"  Parsing JSON and filtering by available images...")
+        parse_start = time.time()
+        self.items = []
+        with open(path, "rb") as f:
+            parser = ijson.items(f, "item")
+            for entry in parser:
+                # Check if image is available
+                if available_images is not None:
+                    # Training format: "filename" field
+                    image_id = entry.get("filename")
+                    if image_id and image_id not in available_images:
+                        continue
+
+                # Add to items
+                self.items.append(entry)
+
+                # Stop if we have enough samples
+                if self.num_samples and len(self.items) >= self.num_samples:
+                    break
+
+        parse_time = time.time() - parse_start
+        total_time = time.time() - start_time
+        print(f"  ✓ Loaded {len(self.items):,} samples in {parse_time:.1f}s (total: {total_time:.1f}s)")
+
+    def _load_jsonl_images_first(self, path: Path) -> None:
+        """Load JSONL format with images-first filtering."""
         import json
 
-        items = []
+        start_time = time.time()
+
+        # Step 1: Scan available images (same as JSON array)
+        if self.image_folder:
+            print(f"  Scanning image folder: {self.image_folder}")
+            available_images = set()
+            for ext in ["*.jpg", "*.jpeg", "*.png", "*.webp"]:
+                for img_path in self.image_folder.glob(ext):
+                    available_images.add(img_path.stem)
+            print(f"  ✓ Found {len(available_images):,} images")
+        else:
+            available_images = None
+
+        # Step 2: Parse JSONL and filter
+        self.items = []
         with open(path, "r", encoding="utf-8") as f:
-            for i, line in enumerate(f):
-                if self.num_samples and i >= self.num_samples:
+            for line in f:
+                entry = json.loads(line)
+
+                # Check if image is available
+                if available_images is not None:
+                    image_id = entry.get("filename")
+                    if image_id and image_id not in available_images:
+                        continue
+
+                self.items.append(entry)
+
+                # Stop if we have enough samples
+                if self.num_samples and len(self.items) >= self.num_samples:
                     break
-                items.append(json.loads(line))
-        self.items = items
+
+        total_time = time.time() - start_time
+        print(f"  ✓ Loaded {len(self.items):,} samples in {total_time:.1f}s")
 
     def _wrap_hf_or_list(self, data_source) -> None:
-        # HuggingFace dataset: assume it supports __len__/__getitem__ or is an iterator for streaming
+        """Wrap HuggingFace dataset or list with images-first filtering."""
+        start_time = time.time()
+
+        # Step 1: Scan available images if image_folder is specified
+        if self.image_folder:
+            print(f"  Scanning image folder: {self.image_folder}")
+            available_images = set()
+            for ext in ["*.jpg", "*.jpeg", "*.png", "*.webp"]:
+                for img_path in self.image_folder.glob(ext):
+                    available_images.add(img_path.stem)
+            print(f"  ✓ Found {len(available_images):,} images")
+        else:
+            available_images = None
+
+        # Step 2: Filter dataset by available images
+        self.items = []
         try:
             length = len(data_source)  # type: ignore
-            if self.num_samples:
-                # take slice
-                self.items = [data_source[i] for i in range(min(length, self.num_samples))]
-            else:
-                self.items = [data_source[i] for i in range(length)]
-        except Exception:
-            # Likely streaming/iterator or list-like; convert to list up to num_samples
-            self.items = []
-            count = 0
-            for x in data_source:
-                self.items.append(x)
-                count += 1
-                if self.num_samples and count >= self.num_samples:
+            print(f"  Filtering {length:,} samples by available images...")
+            for i in range(length):
+                entry = data_source[i]
+
+                # Check if image is available
+                if available_images is not None:
+                    image_id = entry.get("filename")
+                    if image_id and image_id not in available_images:
+                        continue
+
+                self.items.append(entry)
+
+                # Stop if we have enough samples
+                if self.num_samples and len(self.items) >= self.num_samples:
                     break
+        except Exception:
+            # Likely streaming/iterator or list-like
+            print(f"  Filtering streaming dataset by available images...")
+            for entry in data_source:
+                # Check if image is available
+                if available_images is not None:
+                    image_id = entry.get("filename")
+                    if image_id and image_id not in available_images:
+                        continue
+
+                self.items.append(entry)
+
+                # Stop if we have enough samples
+                if self.num_samples and len(self.items) >= self.num_samples:
+                    break
+
+        total_time = time.time() - start_time
+        print(f"  ✓ Loaded {len(self.items):,} samples in {total_time:.1f}s")
 
     def __len__(self) -> int:
         return len(self.items)
@@ -153,6 +282,7 @@ class SpatialRGPTDataset(TorchDataset):
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         import ast
 
+        # Get item from in-memory list
         raw = self.items[idx]
 
         # Load image
@@ -225,6 +355,15 @@ class SpatialRGPTDataset(TorchDataset):
                     except Exception:
                         pil_image = None
 
+        # Handle missing images - this should not happen with images-first approach
+        # but keep error handling for robustness
+        if pil_image is None:
+            filename = raw.get("filename", raw.get("id", idx))
+            raise FileNotFoundError(
+                f"Image not found for sample {filename}. "
+                f"This should not happen with images-first loading - please report this bug."
+            )
+
         # Draw bounding boxes if requested and available
         if self.draw_bboxes and pil_image is not None and "bbox" in raw:
             bboxes = raw["bbox"]
@@ -244,11 +383,10 @@ class SpatialRGPTDataset(TorchDataset):
                 labels = [f"Region [{i}]" for i in range(len(bboxes))]
                 pil_image = draw_bounding_boxes(pil_image, clamped_bboxes, labels=labels)
 
-        # Extract question (prefer text_q for SpatialRGPT-Bench)
-        question = raw.get("text_q") or raw.get("question") or raw.get("prompt") or ""
-
-        # Extract ground truth answer from conversations field
+        # Parse conversations field (training data format: result_10_depth_convs.json)
+        question = None
         answer = None
+
         if "conversations" in raw:
             conversations = raw["conversations"]
             # Parse if it's a string (HuggingFace serialization)
@@ -258,10 +396,30 @@ class SpatialRGPTDataset(TorchDataset):
                 except Exception:
                     conversations = []
 
-            if len(conversations) >= 2:
-                # Answer is at index 1 (second turn)
-                answer = conversations[1].get("value", "")
-        else:
+            # Extract first human-gpt Q/A pair
+            if isinstance(conversations, list) and len(conversations) >= 2:
+                # First turn should be human with question
+                human_turn = conversations[0].get("value", "") if conversations[0].get("from") == "human" else ""
+                # Second turn should be gpt with answer
+                gpt_turn = conversations[1].get("value", "") if conversations[1].get("from") == "gpt" else ""
+
+                # Strip <image> prefix and special tokens from question
+                question = human_turn.replace("<image>\n", "").replace("<image>", "").strip()
+                answer = gpt_turn.strip()
+
+                # Strip <mask> and <depth> special tokens (TheWorld doesn't support these)
+                # Replace with placeholder text that describes the region
+                question = question.replace("<mask> <depth>", "the region").replace("<mask>", "the region").replace(
+                    "<depth>", ""
+                )
+                answer = answer.replace("<mask> <depth>", "the region").replace("<mask>", "the region").replace(
+                    "<depth>", ""
+                )
+
+        # Fallback to evaluation format fields (SpatialRGPT-Bench)
+        if not question:
+            question = raw.get("text_q") or raw.get("question") or raw.get("prompt") or ""
+        if not answer:
             answer = raw.get("answer")
 
         # Extract question type and category from qa_info
@@ -283,10 +441,73 @@ class SpatialRGPTDataset(TorchDataset):
         return {
             "id": raw.get("id") or raw.get("example_id") or idx,
             "image": pil_image,
-            "question": question,
+            "text": question,  # TheWorld collator expects "text" key
+            "label": answer,  # TheWorld collator expects "label" key
+            "question": question,  # Keep for backward compatibility
+            "answer": answer,  # Keep for backward compatibility
             "choices": raw.get("choices"),  # Usually None for SpatialRGPT-Bench
-            "answer": answer,
             "qa_type": qa_type,
             "qa_category": qa_category,
             "metadata": raw,
         }
+
+
+def load_spatial_rgpt(
+    split: str = "train",
+    image_folder: str = None,
+    num_samples: Optional[int] = None,
+    draw_bboxes: bool = False,
+    hf_token: Optional[str] = None,
+) -> SpatialRGPTDataset:
+    """Load SpatialRGPT OpenSpatialDataset for TheWorld training.
+
+    Uses images-first approach: only loads samples for images that exist in image_folder.
+
+    Args:
+        split: Dataset split ("train" or "validation")
+        image_folder: Path to OpenImagesV7 directory (required for training data)
+        num_samples: Limit to N available samples (None = use all available)
+        draw_bboxes: Draw bounding boxes on images (False for training, True for visualization)
+        hf_token: HuggingFace API token (optional, dataset is public)
+
+    Returns:
+        SpatialRGPTDataset instance
+
+    Example:
+        >>> # Load training set
+        >>> dataset = load_spatial_rgpt(
+        ...     split="train",
+        ...     image_folder="data/openimages/train",
+        ...     num_samples=1000
+        ... )
+        >>>
+        >>> # Load validation set with bboxes
+        >>> dataset = load_spatial_rgpt(
+        ...     split="validation",
+        ...     image_folder="data/openimages/validation",
+        ...     draw_bboxes=True
+        ... )
+    """
+    from datasets import load_dataset as hf_load_dataset
+
+    print(f"Loading SpatialRGPT OpenSpatialDataset (split={split})...")
+
+    # Load HuggingFace dataset
+    hf_dataset = hf_load_dataset(
+        "a8cheng/OpenSpatialDataset",
+        split=split,
+        token=hf_token,
+    )
+
+    print(f"  Loaded {len(hf_dataset)} samples from HuggingFace")
+
+    # Wrap in SpatialRGPTDataset (will filter by available images)
+    dataset = SpatialRGPTDataset(
+        hf_dataset,
+        image_folder=image_folder,
+        draw_bboxes=draw_bboxes,
+        num_samples=num_samples,
+    )
+
+    print(f"✓ SpatialRGPT dataset ready ({len(dataset)} available samples)")
+    return dataset

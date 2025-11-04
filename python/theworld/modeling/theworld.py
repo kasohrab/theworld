@@ -335,6 +335,11 @@ class TheWorld(Gemma3ForConditionalGeneration):
             Modified input_ids and attention_mask with world tokens inserted
         """
         batch_size, seq_len = input_ids.shape
+
+        # Handle empty batch (all samples filtered by collator)
+        if batch_size == 0 or seq_len == 0:
+            return input_ids, attention_mask
+
         device = input_ids.device
 
         # Create new input_ids with space for SOW and EOW tokens
@@ -422,26 +427,34 @@ class TheWorld(Gemma3ForConditionalGeneration):
     ) -> None:
         """
         Save model to HuggingFace format.
-        
+
         Saves the custom TheWorldConfig to config.json and
         only the trainable parameters to model.safetensors.
         """
         import os
         os.makedirs(save_directory, exist_ok=True)
-        
+
         self.config.save_pretrained(save_directory)
-        
-        state_dict = self.state_dict()
-        
+
+        # Only save trainable parameters (those with requires_grad=True)
+        trainable_keys = {
+            name for name, param in self.named_parameters() if param.requires_grad
+        }
+        trainable_state_dict = {
+            k: v for k, v in self.state_dict().items() if k in trainable_keys
+        }
+
         if safe_serialization:
             from safetensors.torch import save_file
             save_path = os.path.join(save_directory, "model.safetensors")
-            save_file(state_dict, save_path)
+            save_file(trainable_state_dict, save_path)
         else:
             save_path = os.path.join(save_directory, "pytorch_model.bin")
-            torch.save(state_dict, save_path)
-            
-        print(f"✓ Model saved to {save_directory} (trainable parameters only)")
+            torch.save(trainable_state_dict, save_path)
+
+        print(f"✓ Model saved to {save_directory}")
+        print(f"  Trainable parameters: {len(trainable_state_dict)}")
+        print(f"  Total parameters in model: {len(self.state_dict())}")
 
     def forward(
         self,
