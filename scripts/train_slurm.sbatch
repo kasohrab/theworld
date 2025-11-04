@@ -101,11 +101,11 @@ fi
 
 CONFIG_FILE="$1"
 
-# Use provided accelerate config or default to FSDP
+# Use provided accelerate config or default to DDP
 if [ -n "$2" ]; then
     ACCELERATE_CONFIG="$2"
 else
-    ACCELERATE_CONFIG="configs/accelerate/multi_gpu_fsdp.yaml"
+    ACCELERATE_CONFIG="configs/accelerate/multi_gpu_ddp.yaml"
 fi
 
 # Validate files exist
