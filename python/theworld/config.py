@@ -32,7 +32,6 @@ class TrainingConfig:
     Memory Optimization:
         use_gradient_checkpointing: Enable gradient checkpointing to save memory
         mixed_precision: Mixed precision training ("no", "fp16", "bf16")
-        deepspeed_config: Path to DeepSpeed configuration JSON file (None = disabled)
         save_safetensors: Save checkpoints in safetensors format (faster, safer)
 
     Checkpointing:
@@ -93,7 +92,6 @@ class TrainingConfig:
     # Memory optimization
     use_gradient_checkpointing: bool = False
     mixed_precision: str = "bf16"  # "no", "fp16", "bf16"
-    deepspeed_config: Optional[str] = None  # Path to DeepSpeed JSON (None = disabled)
     save_safetensors: bool = True  # Save checkpoints in safetensors format (faster loading)
 
     # Checkpointing

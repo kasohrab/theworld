@@ -221,6 +221,8 @@ logs/
 outputs/
 data/result_10_depth_convs.json
 data/images
+data/llava-cc3m
+data/openimages*
 
 # misc
 wandb/

@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 from PIL import Image
-from typing import List, cast
+from typing import List, Optional, cast
 from diffusers.models.autoencoders.autoencoder_kl import AutoencoderKL
 from diffusers.models.modeling_outputs import AutoencoderKLOutput
 from torch import Tensor
@@ -37,17 +37,28 @@ class CosmosEncoder(nn.Module):
         cosmos_vae: AutoencoderKL,
         cosmos_dim: int = 16,
         gemma_dim: int = 2304,
-        device: str = "cuda",
+        device: Optional[str] = None,
         freeze_vae: bool = True,
     ):
         super().__init__()
+
+        # Auto-detect device if not provided
+        # Accelerate will handle proper device placement in distributed setups
+        if device is None:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+
         self.cosmos_vae = cosmos_vae
         self.device: str = device
         self.cosmos_dim = cosmos_dim
         self.freeze_vae = freeze_vae
 
         # Projection: 16-dim latent → 2304-dim Gemma embedding space
-        self.world_projection = nn.Linear(cosmos_dim, gemma_dim, dtype=torch.bfloat16)
+        # 2-layer MLP
+        self.world_projection = nn.Sequential(
+            nn.Linear(cosmos_dim, gemma_dim, dtype=torch.bfloat16), 
+            nn.GELU(),
+            nn.Linear(gemma_dim, gemma_dim, dtype=torch.bfloat16),
+            nn.GELU())
         self.world_projection.to(device)
 
     def forward(self, images: List[Image.Image]) -> Tensor:
@@ -129,6 +140,8 @@ class CosmosEncoder(nn.Module):
         assert projected_embeds.dim() == 3, f"Expected 3D tensor, got {projected_embeds.dim()}D"
         assert projected_embeds.size(0) == batch_size, f"Batch size mismatch in output"
         assert projected_embeds.size(1) == num_tokens, f"Token count mismatch"
-        assert projected_embeds.size(2) == self.world_projection.out_features, f"Projection dim mismatch"
+        # For Sequential (2-layer MLP), get output dim from last Linear layer
+        expected_dim = self.world_projection[-2].out_features  # -2 because last is GELU
+        assert projected_embeds.size(2) == expected_dim, f"Projection dim mismatch"
 
         return projected_embeds

@@ -305,11 +305,11 @@ Already enabled by default (`dtype=torch.bfloat16`):
 - Gradients accumulated in float32
 - ~50% memory savings vs full float32
 
-### DeepSpeed ZeRO
+### Multi-GPU Training
 
-For training beyond single GPU capacity:
-- ZeRO Stage 2: Shard optimizer states + gradients
-- ZeRO Stage 3: Shard parameters + optimizer + gradients
+For training beyond single GPU capacity, use Accelerate:
+- **DDP**: Each GPU has full model copy (best for projection-only and + vision)
+- **FSDP**: Shards model across GPUs (required for full model training)
 
 See [Distributed Training Guide](../training/distributed.md) for detailed configuration.
 
@@ -339,4 +339,4 @@ See [Distributed Training Guide](../training/distributed.md) for detailed config
 
 - [Architecture Overview](overview.md) - Core architecture concepts
 - [Multi-Stage Training Guide](../training/multi-stage.md) - Progressive unfreezing workflow
-- [Distributed Training](../training/distributed.md) - DeepSpeed and multi-GPU training
+- [Distributed Training](../training/distributed.md) - Accelerate and multi-GPU training

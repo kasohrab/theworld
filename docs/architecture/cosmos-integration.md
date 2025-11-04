@@ -1,12 +1,16 @@
-# Cosmos Architecture Explained
+# Cosmos Architecture Deep Dive
 
-This document explains the Cosmos world model architecture and specifically how the WanEncoder3d VAE works.
+This document provides a comprehensive explanation of the Cosmos world model architecture, focusing on how the WanEncoder3d VAE works and how we integrate it with TheWorld.
 
 ## Table of Contents
 1. [Overview of Cosmos](#overview-of-cosmos)
 2. [WanEncoder3d Architecture](#wanencoder3d-architecture)
-3. [How We Use Cosmos in TheWorld](#how-we-use-cosmos-in-theworld)
-4. [Why .mode() is the Correct API](#why-mode-is-the-correct-api)
+3. [VAE Latent Space: Deterministic vs Stochastic](#vae-latent-space-deterministic-vs-stochastic)
+4. [Decoder Architecture (That We Skip)](#decoder-architecture-that-we-skip)
+5. [Training vs Inference Behavior](#training-vs-inference-behavior)
+6. [How We Use Cosmos in TheWorld](#how-we-use-cosmos-in-theworld)
+7. [Why .mode() is the Correct API](#why-mode-is-the-correct-api)
+8. [Gradient Flow Analysis](#gradient-flow-analysis)
 
 ---
 
@@ -204,6 +208,276 @@ class AutoencoderKLWan(nn.Module):
 
         return AutoencoderKLOutput(latent_dist=posterior)
 ```
+
+### Spatial Compression Math
+
+For different input sizes, here's how the compression works:
+
+**224×224 input (typical for TheWorld):**
+```
+Input:   (B, 3, 1, 224, 224)      # Single frame
+         ↓ 8× spatial compression
+Encoded: (B, 32, 1, 28, 28)       # 28 = 224 / 8
+         ↓ split channels
+Mean:    (B, 16, 1, 28, 28)       # First 16 channels
+LogVar:  (B, 16, 1, 28, 28)       # Last 16 channels
+         ↓ .mode() → mean only
+Latents: (B, 16, 1, 28, 28)       # Deterministic output
+         ↓ reshape to tokens
+Tokens:  (B, 784, 16)             # 784 = 28×28 spatial positions
+         ↓ project
+Embeddings: (B, 784, 2304)        # Ready for Gemma
+```
+
+**512×512 input (high-resolution):**
+```
+Input:   (B, 3, 1, 512, 512)
+         ↓ 8× spatial compression
+Latents: (B, 16, 1, 64, 64)       # 64 = 512 / 8
+         ↓ reshape to tokens
+Tokens:  (B, 4096, 16)            # 4096 = 64×64 spatial positions
+```
+
+**Key parameters from Cosmos config:**
+- `z_dim`: 16 (true latent dimension)
+- `base_dim`: 96-128 (initial encoder channels)
+- `scale_factor_spatial`: 8 (spatial compression ratio)
+- `scale_factor_temporal`: 4 (temporal compression, unused when T=1)
+- `latents_mean` & `latents_std`: Pre-computed normalization statistics (16 values each)
+
+---
+
+## VAE Latent Space: Deterministic vs Stochastic
+
+### The Critical Question: How Do We Extract Latents?
+
+The VAE encoder outputs a `DiagonalGaussianDistribution` object, which provides **two main extraction methods**:
+
+```python
+class DiagonalGaussianDistribution:
+    def __init__(self, parameters: torch.Tensor, deterministic: bool = False):
+        self.parameters = parameters
+        # Split 32 channels into mean (16) and logvar (16)
+        self.mean, self.logvar = torch.chunk(parameters, 2, dim=1)
+        self.logvar = torch.clamp(self.logvar, -30.0, 20.0)
+        self.deterministic = deterministic
+        self.std = torch.exp(0.5 * self.logvar)
+        self.var = torch.exp(self.logvar)
+
+    def sample(self, generator=None) -> torch.Tensor:
+        """STOCHASTIC: Sample from the distribution using reparameterization trick."""
+        # z = μ + σ * ε, where ε ~ N(0,1)
+        noise = randn_tensor(self.mean.shape, generator=generator, ...)
+        x = self.mean + self.std * noise
+        return x
+
+    def mode(self) -> torch.Tensor:
+        """DETERMINISTIC: Return the mode (peak) of Gaussian = mean."""
+        return self.mean
+```
+
+### Three Ways to Extract Latents
+
+| Method | Code | Deterministic? | Differentiable? | When to Use |
+|--------|------|----------------|-----------------|-------------|
+| **`.sample()`** | `latents = dist.sample()` | ❌ No (adds noise) | ✅ Yes | VAE training (KL regularization) |
+| **`.mode()` ⭐** | `latents = dist.mode()` | ✅ Yes | ✅ Yes | Inference with frozen VAE |
+| **`.mean` attribute** | `latents = dist.mean` | ✅ Yes | ✅ Yes | ❌ Not public API, don't use |
+
+### What TheWorld Uses
+
+**In `python/theworld/modeling/cosmos_encoder.py:120`:**
+
+```python
+encoder_output = self.cosmos_vae.encode(cosmos_input_5d)
+latent_dist = encoder_output.latent_dist
+latents = latent_dist.mode()  # ✅ DETERMINISTIC - Always returns mean
+```
+
+**Why `.mode()` is correct for TheWorld:**
+
+1. ✅ **Deterministic** - Same input always produces same output (critical for reproducibility)
+2. ✅ **Fully differentiable** - Gradients flow through the mean tensor (just returns `self.mean`)
+3. ✅ **Public API** - This is the official method, not accessing internal attributes
+4. ✅ **No noise added** - Clean latent representation
+5. ✅ **Production-ready** - Used by official Cosmos decoder (see `AutoencoderKLWan.forward()` line 1087)
+6. ✅ **VAE is frozen** - Not training the encoder, just using it for inference
+
+### Understanding Stochastic vs Deterministic
+
+**When would you use `.sample()` (stochastic)?**
+
+During **VAE pre-training** (which NVIDIA already did for us):
+
+```python
+# VAE training mode (not what TheWorld does)
+latents = dist.sample()  # z = mean + std * noise
+reconstructed = decoder(latents)
+
+# Two loss components:
+reconstruction_loss = MSE(reconstructed, original_image)
+kl_loss = KL_divergence(dist, N(0,1))  # Regularize to unit Gaussian
+total_loss = reconstruction_loss + β * kl_loss
+```
+
+The stochastic sampling is **essential for VAE training** because:
+- The KL loss needs the distribution parameters (mean, std)
+- Sampling enables the reparameterization trick for gradient flow
+- Regularizes the latent space to approximate N(0,1)
+
+**When do you use `.mode()` (deterministic)?**
+
+During **inference with frozen VAE** (what TheWorld does):
+
+```python
+# TheWorld training/inference mode
+latents = dist.mode()  # z = mean (no noise)
+world_embeds = projection(latents)  # Only this is trained
+combined = fuse(world_embeds, vision_embeds, text_embeds)
+logits = gemma(combined)
+loss = CrossEntropy(logits, labels)  # Standard LM loss
+```
+
+We use deterministic mode because:
+- VAE is frozen (not being trained)
+- No KL regularization needed (VAE already pre-trained)
+- Want consistent embeddings for stable training
+- Projection layer learns mapping from fixed latent space
+
+---
+
+## Decoder Architecture (That We Skip)
+
+### What the Decoder Does
+
+The **WanDecoder3d** mirrors the encoder architecture in reverse, reconstructing RGB video frames from 16-dimensional latent representations.
+
+**Architecture (mirror of encoder):**
+```
+Latent: (B, 16, T, h, w)
+    ↓
+Post-quant conv: 16 → 16 channels (1×1 conv)
+    ↓
+Decoder (WanDecoder3d):
+    ├─ conv_in: Conv3d(16 → 512)
+    ├─ mid_block:
+    │   ├─ WanResidualBlock (512)
+    │   ├─ WanAttentionBlock (spatial self-attention)
+    │   └─ WanResidualBlock (512)
+    ├─ up_blocks[0]:
+    │   ├─ WanResidualBlock × 3 (512 channels)
+    │   └─ WanUpsample2d (512 → 512, spatial 2×)
+    ├─ up_blocks[1]:
+    │   ├─ WanResidualBlock × 3 (512 channels)
+    │   └─ WanUpsample2d (512 → 256, spatial 2×)
+    ├─ up_blocks[2]:
+    │   ├─ WanResidualBlock × 3 (256 channels)
+    │   └─ WanUpsample2d (256 → 128, spatial 2×)
+    ├─ up_blocks[3]:
+    │   └─ WanResidualBlock × 3 (128 channels)
+    └─ conv_out: Conv3d(128 → 3 RGB)
+    ↓
+Output: (B, 3, T, H, W) - Reconstructed video frames
+```
+
+### When is the Decoder Used?
+
+**In TheWorld: NEVER** ❌
+- We only need latent embeddings, not reconstructed images
+- Skipping decode saves ~50% of VAE computation time
+- We project latents directly to Gemma space: 16 → 2304 dims
+
+**In Cosmos Pipeline: YES** ✅
+- During autoregressive future frame prediction
+- When `output_type="video"` (default)
+- We use `output_type="latent"` to skip this expensive step
+
+**During VAE Training: YES** ✅
+- Decoder is trained to reconstruct images from latents
+- This forces encoder to capture all visual information in 16 dims
+- Reconstruction loss: `MSE(decoded_image, original_image)`
+- Combined with KL divergence loss for proper VAE training
+
+### Why We Skip Decoding
+
+```python
+# Cosmos full pipeline (what we DON'T do)
+encoded = vae.encode(image).latent_dist.mode()  # (B, 16, T, h, w)
+decoded = vae.decode(encoded)                   # (B, 3, T, H, W) ← Expensive!
+
+# TheWorld (what we DO)
+latents = vae.encode(image).latent_dist.mode()  # (B, 16, T, h, w)
+world_embeds = projection(latents)              # (B, h*w, 2304) ← Skip decode!
+```
+
+**Benefits of skipping decoder:**
+1. ✅ ~50% faster VAE processing
+2. ✅ Lower memory usage (no pixel-space tensors)
+3. ✅ Direct access to semantic latent space
+4. ✅ Cleaner integration (no pixel→latent round-trip)
+
+---
+
+## Training vs Inference Behavior
+
+### Understanding the Two Training Contexts
+
+There are **two completely different training contexts** to understand:
+
+#### 1. VAE Pre-training (Done by NVIDIA)
+
+**Goal:** Train the VAE to compress/reconstruct video frames
+
+```python
+# During VAE pre-training at NVIDIA:
+latents = dist.sample()  # ← STOCHASTIC (need noise for KL loss)
+reconstructed = decoder(latents)
+
+# Two loss components:
+reconstruction_loss = MSE(reconstructed, original)
+kl_loss = KL(dist, N(0,1))  # Regularize latent space
+total_loss = reconstruction_loss + β * kl_loss
+
+# Both encoder and decoder weights are updated
+```
+
+**Why stochastic sampling?**
+- KL loss needs distribution parameters (μ, σ)
+- Reparameterization trick enables gradient flow
+- Forces latent space to approximate N(0,1)
+
+#### 2. TheWorld Training (What We Do)
+
+**Goal:** Train projection layer to map Cosmos latents → Gemma embeddings
+
+```python
+# During TheWorld training (VAE frozen):
+latents = dist.mode()  # ← DETERMINISTIC (VAE frozen)
+world_embeds = projection(latents)  # Only this is trained
+combined = fuse(world_embeds, vision_embeds, text_embeds)
+logits = gemma(combined)
+loss = CrossEntropy(logits, labels)  # Standard LM loss
+
+# Only projection.weight and projection.bias are updated
+# VAE encoder weights remain frozen
+```
+
+**Why deterministic mode?**
+- ✅ VAE is frozen (not training encoder/decoder)
+- ✅ No KL loss needed (VAE already trained)
+- ✅ Want consistent embeddings for stable projection training
+- ✅ Projection learns from fixed latent space
+
+### Summary Table
+
+| Component | Training Mode | VAE Trainable? | Uses `.sample()`? | Uses `.mode()`? |
+|-----------|---------------|----------------|-------------------|-----------------|
+| **VAE Pre-training** | Train encoder+decoder | ✅ Yes | ✅ Yes | ❌ No |
+| **VAE Inference** | Frozen VAE | ❌ No | ❌ No | ✅ Yes |
+| **TheWorld Training** | Train projection only | ❌ No | ❌ No | ✅ Yes |
+| **TheWorld Inference** | Everything frozen | ❌ No | ❌ No | ✅ Yes |
+
+**Key insight:** TheWorld isn't training a VAE—it's training a projection layer on top of a frozen, pre-trained VAE. This is why we use deterministic `.mode()` instead of stochastic `.sample()`.
 
 ---
 
@@ -447,6 +721,111 @@ world_embeds = projection(latents)
 
 ---
 
+## Gradient Flow Analysis
+
+### Are `.mode()` and `.sample()` Differentiable?
+
+**Yes, both methods are fully differentiable!** This is a common point of confusion.
+
+```python
+# Both methods return tensors with gradients:
+latents_mode = latent_dist.mode()      # Returns self.mean (has grad_fn)
+latents_sample = latent_dist.sample()  # Returns self.mean + self.std * noise (has grad_fn)
+```
+
+### How Gradients Flow Through `.mode()`
+
+```python
+# Forward pass with .mode()
+latents = latent_dist.mode()  # latents = mean tensor
+loss = some_loss(latents)
+
+# Backward pass
+loss.backward()
+# ✅ Gradients flow: loss → latents (mean) → encoder parameters
+```
+
+**Why this works:**
+- `.mode()` simply returns `self.mean`, which is a tensor computed from encoder output
+- `self.mean` has a `grad_fn` that traces back through the encoder
+- Gradients flow normally through the computational graph
+
+### How Gradients Flow Through `.sample()`
+
+```python
+# Forward pass with .sample()
+latents = latent_dist.sample()  # latents = mean + std * noise
+loss = some_loss(latents)
+
+# Backward pass
+loss.backward()
+# ✅ Gradients flow: loss → mean, std → encoder parameters
+# ❌ No gradients to noise (random, not connected to encoder)
+```
+
+**Reparameterization trick:**
+- Noise has no gradient (it's sampled randomly)
+- Gradients flow through `mean` and `std` parameters
+- This is how VAEs are trained despite stochastic sampling
+
+### Gradient Flow in TheWorld
+
+**With frozen VAE (default):**
+
+```python
+# Forward pass
+with torch.no_grad():
+    latents = cosmos_vae.encode(image).latent_dist.mode()  # Frozen
+# OR: latents requires_grad=True but cosmos_vae params frozen
+
+world_embeds = projection(latents)  # Trainable
+combined = fuse(world_embeds, vision_embeds, text_embeds)
+logits = gemma(combined)
+loss = CrossEntropy(logits, labels)
+
+# Backward pass
+loss.backward()
+# ✅ Gradients flow to projection.weight, projection.bias
+# ❌ Gradients stop at latents (encoder frozen)
+```
+
+**With unfrozen VAE (if `freeze_cosmos_vae=False`):**
+
+```python
+# Forward pass (no torch.no_grad)
+latents = cosmos_vae.encode(image).latent_dist.mode()  # Trainable
+world_embeds = projection(latents)
+combined = fuse(world_embeds, vision_embeds, text_embeds)
+logits = gemma(combined)
+loss = CrossEntropy(logits, labels)
+
+# Backward pass
+loss.backward()
+# ✅ Gradients flow to projection parameters
+# ✅ Gradients flow through .mode() to encoder parameters
+# ✅ Both projection and VAE encoder are updated
+```
+
+### Key Points
+
+1. **`.mode()` is differentiable** - Don't confuse "deterministic" with "non-differentiable"
+2. **Frozen ≠ No gradient flow** - Gradients can flow through frozen layers, they just don't update
+3. **Both methods work for training** - `.mode()` for deterministic, `.sample()` for stochastic
+4. **TheWorld uses frozen VAE** - So encoder params don't update, but gradients still flow to projection
+
+### Comparison Table
+
+| Method | Deterministic? | Differentiable? | Gradient Flow | When to Use |
+|--------|----------------|-----------------|---------------|-------------|
+| **`.mode()`** | ✅ Yes | ✅ Yes | loss → mean → encoder | Frozen VAE inference |
+| **`.sample()`** | ❌ No (adds noise) | ✅ Yes | loss → mean, std → encoder | VAE training |
+| **Frozen VAE** | N/A | ✅ Yes | Gradients flow but params don't update | TheWorld default |
+| **Unfrozen VAE** | N/A | ✅ Yes | Gradients flow AND params update | Advanced training |
+
+**Bottom line:** `.mode()` is both deterministic AND differentiable—perfect for our use case where we want consistent embeddings but still need gradient flow to the projection layer.
+
+---
+
 ## Summary
 
 ### What is WanEncoder3d?
@@ -463,10 +842,34 @@ world_embeds = projection(latents)
 5. ✅ **10-35× faster** - Bypass text encoding, diffusion, decoding
 
 ### Key Takeaways
-- **VAE is purely visual** - No text conditioning at this stage
-- **`.mode()` is the correct API** - Don't use `.mean` or `.sample()`
-- **Causal convolutions** - Designed for autoregressive video generation (but we use single frames)
-- **RMS normalization** - Faster and more stable than LayerNorm
-- **Spatial compression only** - We don't use temporal compression (T=1 always)
 
-This architecture provides high-quality visual encodings that complement Gemma's language understanding, creating a true vision-language-world model.
+**Architecture:**
+- **3D Causal VAE** - WanEncoder3d/WanDecoder3d for video compression
+- **16-dim latent space** - Semantic representation learned via reconstruction
+- **8× spatial compression** - 224×224 → 28×28 (784 tokens)
+- **Causal convolutions** - Designed for autoregressive video (but we use single frames)
+- **RMS normalization** - Faster and more stable than LayerNorm
+
+**Latent Extraction:**
+- **`.mode()` is correct** ⭐ - Deterministic, differentiable, public API
+- **`.sample()` for VAE training** - Stochastic, needed for KL regularization
+- **Never use `.mean` attribute** - Not the public API
+
+**Training Context:**
+- **VAE pre-trained by NVIDIA** - We don't train it, just use it
+- **TheWorld trains projection** - 16 → 2304 dims, only ~4.5M params
+- **Frozen VAE is default** - Deterministic embeddings, stable training
+- **Can unfreeze if needed** - For domain-specific visual features
+
+**Integration:**
+- **Skip decoder** - ~50% faster, we only need latent embeddings
+- **Skip diffusion** - 10-35× faster, no text-to-video generation needed
+- **Single frame mode** - T=1, no temporal prediction (yet)
+- **Direct projection** - Clean path from Cosmos latents to Gemma embeddings
+
+**Gradient Flow:**
+- **`.mode()` is differentiable** - Gradients flow through mean tensor
+- **Frozen ≠ non-differentiable** - Gradients flow but params don't update
+- **Projection always trainable** - Learns to map Cosmos → Gemma space
+
+This architecture provides high-quality visual encodings that complement Gemma's language understanding, creating a true vision-language-world model that can reason about both static visual understanding and temporal dynamics.

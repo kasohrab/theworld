@@ -1,0 +1,61 @@
+{
+  "_comment": "Test configuration for SpatialRGPT integration (50 samples for quick validation)",
+
+  "model_name": "google/gemma-3-4b-it",
+  "cosmos_model_name": "nvidia/Cosmos-Predict2-2B-Video2World",
+  "num_world_steps": 0,
+  "max_world_steps": 16,
+  "freeze_gemma_vision": true,
+  "freeze_gemma_language": true,
+  "freeze_cosmos_vae": true,
+
+  "learning_rate": 0.0001,
+  "batch_size": 4,
+  "gradient_accumulation_steps": 2,
+  "num_epochs": 2,
+  "warmup_steps": 10,
+  "weight_decay": 0.01,
+  "max_grad_norm": 1.0,
+
+  "use_gradient_checkpointing": false,
+  "mixed_precision": "bf16",
+
+  "output_dir": "./checkpoints/theworld-spatial-rgpt-test",
+  "save_steps": 25,
+  "save_total_limit": 2,
+  "resume_from_checkpoint": null,
+
+  "eval_steps": 50,
+  "eval_batch_size": 4,
+  "do_eval": false,
+
+  "logging_steps": 5,
+  "log_to_wandb": false,
+  "wandb_project": "theworld-spatial-rgpt",
+  "wandb_run_name": "test-integration",
+  "log_to_tensorboard": true,
+
+  "max_seq_length": 2048,
+  "num_workers": 4,
+  "dataset_name": "spatial_rgpt",
+  "train_dataset_path": "/home/hice1/ksohrab3/scratch/theworld/data/result_10_depth_convs.json",
+  "eval_dataset_path": null,
+  "num_samples": 50,
+  "streaming": false,
+
+  "_dataset_setup_instructions": [
+    "This config uses the local SpatialRGPT JSON file (result_10_depth_convs.json)",
+    "Download images first: python scripts/download_openimages.py --num-images 1000",
+    "Then run: python downloader.py data/test_images.txt --download_folder=/home/hice1/ksohrab3/scratch/theworld/data/openimages --num_processes=10",
+    "Ready to run: python scripts/train_hf.py --config configs/spatial_rgpt_test.json"
+  ],
+
+  "image_folder": "/home/hice1/ksohrab3/scratch/theworld/data/openimages",
+  "_image_folder_comment": "OpenImagesV7 downloaded via official downloader (no /train subdirectory)",
+
+  "hf_token": null,
+  "push_to_hub": false,
+  "hub_model_id": "your-username/theworld-spatial-rgpt-test",
+  "hub_strategy": "every_save",
+  "hub_private_repo": false
+}

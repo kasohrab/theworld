@@ -421,7 +421,7 @@ for epoch in range(num_epochs):
 
 ### Phase 4: Advanced Features (Optional)
 1. Add PEFT/LoRA support for parameter-efficient fine-tuning
-2. Add DeepSpeed integration for multi-node training
+2. Add Accelerate multi-node training configuration
 3. Add evaluation metrics (BLEU, accuracy, custom)
 4. Add data augmentation
 

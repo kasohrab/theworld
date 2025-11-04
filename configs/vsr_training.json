@@ -1,5 +1,13 @@
 {
-  "_comment": "Training configuration for Visual Spatial Reasoning (VSR) dataset with world embeddings",
+  "_comment": "VSR training with Accelerate (projection-only by default)",
+  "_usage": "accelerate launch --config_file configs/accelerate/multi_gpu_ddp.yaml scripts/train_hf.py --config configs/vsr_training.json",
+  "_notes": [
+    "Projection-only: Trains only world projection layer (~1.87% params, fast)",
+    "Full model: Set freeze_gemma_language=false to train language model (89% params, slower)",
+    "For multi-GPU: Use accelerate launch with appropriate config file",
+    "For 2 GPUs: Use configs/accelerate/multi_gpu_ddp.yaml",
+    "For 4+ GPUs or full model: Use configs/accelerate/multi_gpu_fsdp.yaml"
+  ],
 
   "model_name": "google/gemma-3-4b-it",
   "cosmos_model_name": "nvidia/Cosmos-Predict2-2B-Video2World",
@@ -20,9 +28,9 @@
   "use_gradient_checkpointing": true,
   "mixed_precision": "bf16",
 
-  "output_dir": "./checkpoints/theworld-vsr-new",
-  "save_steps": 250,
-  "save_total_limit": 100,
+  "output_dir": "./checkpoints/theworld-vsr",
+  "save_steps": 500,
+  "save_total_limit": 3,
   "resume_from_checkpoint": null,
 
   "eval_steps": 500,
@@ -32,7 +40,7 @@
   "logging_steps": 50,
   "log_to_wandb": false,
   "wandb_project": "TheWorld",
-  "wandb_run_name": "vsr-projection-world-enabled",
+  "wandb_run_name": "vsr-projection-training",
   "log_to_tensorboard": true,
 
   "max_seq_length": 2048,
@@ -57,8 +65,8 @@
   ],
 
   "hf_token": null,
-  "push_to_hub": true,
-  "hub_model_id": "kasohrab/theworld-vsr",
+  "push_to_hub": false,
+  "hub_model_id": "your-username/theworld-vsr",
   "hub_strategy": "every_save",
-  "hub_private_repo": true
+  "hub_private_repo": false
 }

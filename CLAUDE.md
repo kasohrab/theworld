@@ -10,6 +10,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 3. Run `make check` to verify formatting before committing
 4. **Run `make typecheck`** to verify type correctness (catches method signature mismatches, etc.)
 5. **Run smoke test first** after setup to verify everything works: `make smoke-test`
+6. **Use `accelerate launch`** for multi-GPU training (never use `torchrun` or `deepspeed` directly)
 
 ## Project Overview
 
@@ -698,34 +699,36 @@ train_dataset = SpatialRGPTDataset(
 
 **Full setup:**
 
-1. **Download OpenImagesV7 images**:
-   ```bash
-   mkdir -p data/openimages
-   # Download from: https://storage.googleapis.com/openimages/web/download_v7.html
-   # Follow their instructions to download train/validation splits
-   ```
+See the complete end-to-end guide: **[docs/training/spatial-rgpt.md](docs/training/spatial-rgpt.md)**
 
-2. **Update training config**:
-   ```bash
-   # Edit configs/spatial_rgpt_training.json
-   vim configs/spatial_rgpt_training.json
-   # Set "image_folder": "data/openimages/train"
-   ```
+The guide covers:
+- Downloading the 30GB training JSON from HuggingFace
+- Extracting image IDs and downloading OpenImagesV7 images
+- Training configuration and execution
+- Progressive training (train while images download)
+- Resume capability and monitoring
 
-3. **Run training**:
-   ```bash
-   python scripts/train_hf.py --config configs/spatial_rgpt_training.json
-   ```
+**Quick reference:**
+```bash
+# 1. Download training data
+huggingface-cli download a8cheng/OpenSpatialDataset --repo-type dataset --local-dir data/openspatial
 
-**Integration details:**
-- SpatialRGPT repo is included as a git submodule at `external/SpatialRGPT`
-- Dataset loader automatically handles both training and evaluation formats
-- No need to draw bounding boxes for training (regions are referenced in text)
-- Compatible with standard TheWorld training pipeline
+# 2. Extract image IDs
+python scripts/download_openimages.py --output data/required_images.txt
+
+# 3. Download images (background)
+sbatch scripts/download_openimages.sbatch
+
+# 4. Train (can start immediately)
+export HF_TOKEN=hf_your_token_here
+uv run accelerate launch --config_file configs/accelerate/multi_gpu_ddp.yaml \
+    scripts/train_hf.py --config configs/spatial_rgpt_training.json
+```
 
 **See also**:
-- `docs/evaluation/benchmarks/spatial-rgpt.md` - Evaluation on SpatialRGPT-Bench
-- `configs/spatial_rgpt_training.json` - Training configuration
+- [docs/training/spatial-rgpt.md](docs/training/spatial-rgpt.md) - Complete training guide
+- [docs/evaluation/benchmarks/spatial-rgpt.md](docs/evaluation/benchmarks/spatial-rgpt.md) - Evaluation guide
+- [configs/spatial_rgpt_training.json](configs/spatial_rgpt_training.json) - Training configuration
 
 ### Gradient Checkpointing
 
@@ -830,60 +833,66 @@ python scripts/train_hf.py --hf_token hf_your_token_here
 
 See [HuggingFace Hub Upload Guide](docs/training/hub-upload.md) for detailed instructions.
 
-### Distributed Training
+### Multi-GPU Training with Accelerate
 
-HuggingFace Trainer automatically handles distributed training:
+TheWorld uses HuggingFace Accelerate for seamless multi-GPU training. Accelerate provides a unified interface that works across different distributed training backends (DDP, FSDP) without code changes.
 
-**Standard Multi-GPU (DDP):**
+**Single GPU (default):**
 ```bash
-# Single GPU (projection-only, <25GB)
-python scripts/train_hf.py --config configs/vsr_training.json
-
-# Multi-GPU DDP (data parallel, each GPU has full model)
-torchrun --nproc_per_node=4 scripts/train_hf.py --config configs/vsr_training.json
+python scripts/train_hf.py --config configs/llava_pretrain_full.json
 ```
 
-**DeepSpeed ZeRO (Model Sharding):**
-
-For training larger model portions (e.g., unfrozen language model), use DeepSpeed ZeRO to shard model state across GPUs:
-
+**Multi-GPU with Accelerate:**
 ```bash
-# DeepSpeed with 4 GPUs (shards optimizer + gradients + parameters)
-deepspeed --num_gpus=4 scripts/train_hf.py --config configs/vsr_training_deepspeed.json
+# Auto-detect all available GPUs
+accelerate launch scripts/train_hf.py --config configs/llava_pretrain_full.json
 
-# DeepSpeed with 2 GPUs
-deepspeed --num_gpus=2 scripts/train_hf.py --config configs/vsr_training_deepspeed.json
+# Use specific Accelerate config (2 GPUs with DDP)
+accelerate launch --config_file configs/accelerate/multi_gpu_ddp.yaml \
+    scripts/train_hf.py --config configs/llava_pretrain_full.json
 
-# Single GPU with CPU offloading (slow but works)
-# Edit config: "deepspeed_config": "configs/deepspeed_offload_1gpu.json"
-deepspeed --num_gpus=1 scripts/train_hf.py --config configs/vsr_training_deepspeed.json
+# 4+ GPUs or larger models (FSDP for memory efficiency)
+accelerate launch --config_file configs/accelerate/multi_gpu_fsdp.yaml \
+    scripts/train_hf.py --config configs/llava_pretrain_full.json
 ```
 
-**Important Notes:**
-- **DO NOT use `torchrun`** with DeepSpeed configs - use the `deepspeed` launcher
-- **DO NOT use `python` directly** with DeepSpeed configs - DeepSpeed needs to initialize properly
-- DeepSpeed automatically handles device placement - don't use `device_map="auto"` in your config
-- See `docs/training/distributed.md` for memory calculations and performance details
+**Accelerate Configuration Files:**
 
-**DeepSpeed vs DDP:**
-- **DDP**: Each GPU has full model copy. Good for small models, simple setup.
-- **DeepSpeed ZeRO**: Shards model across GPUs. Required for large models (>40GB/GPU). More complex but necessary.
+TheWorld includes pre-configured Accelerate settings in `configs/accelerate/`:
+- `single_gpu.yaml` - Single GPU training
+- `multi_gpu_ddp.yaml` - 2-4 GPUs with Data Distributed Parallel
+- `multi_gpu_fsdp.yaml` - Larger models with Fully Sharded Data Parallel
+
+**Creating Custom Accelerate Configs:**
+```bash
+# Interactive config creation
+accelerate config
+
+# Saves to ~/.cache/huggingface/accelerate/default_config.yaml
+# Then use: accelerate launch scripts/train_hf.py --config ...
+```
+
+**DDP vs FSDP:**
+- **DDP**: Each GPU holds full model copy. Simple, fast for models that fit in memory.
+- **FSDP**: Shards model across GPUs. Enables training larger models or unfreezing more parameters.
 
 **Multi-node:**
 ```bash
-# See HuggingFace Accelerate or DeepSpeed documentation
+# See HuggingFace Accelerate documentation for multi-node setup
+# https://huggingface.co/docs/accelerate/basic_tutorials/launch
 ```
 
 ### Memory Optimization Strategies
 
-| Scenario | Config | Memory/GPU | Speed |
-|----------|--------|------------|-------|
-| **Projection only** | Default | 20-24GB | Fast |
-| **+ Vision encoder** | `freeze_gemma_vision=false` | 35-40GB | Medium |
-| **+ Vision + GradChkpt** | + `use_gradient_checkpointing=true` | 25-30GB | Slower |
-| **Full model** | All `false` + checkpointing | 56-60GB | Slow |
+| Scenario | Config | Memory/GPU | Speed | Launch Command |
+|----------|--------|------------|-------|----------------|
+| **Projection only** | Default | 20-24GB | Fast | `python scripts/train_hf.py` |
+| **Projection (2 GPUs)** | Default | 30-35GB each | Faster | `accelerate launch --config_file configs/accelerate/multi_gpu_ddp.yaml` |
+| **+ Vision encoder** | `freeze_gemma_vision=false` | 35-40GB | Medium | Same as above |
+| **+ Vision + GradChkpt** | + `use_gradient_checkpointing=true` | 25-30GB | Slower | Same as above |
+| **Full model (FSDP)** | All `false` + checkpointing | 35-45GB each | Slow | `accelerate launch --config_file configs/accelerate/multi_gpu_fsdp.yaml` |
 
-For full model training beyond single GPU capacity, see `docs/training/distributed.md` for DeepSpeed ZeRO strategies.
+For detailed memory calculations and FSDP configuration, see `docs/training/distributed.md`.
 
 ## Architecture Notes
 
