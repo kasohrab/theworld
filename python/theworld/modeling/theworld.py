@@ -273,15 +273,19 @@ class TheWorld(Gemma3ForConditionalGeneration):
 
     def _apply_freezing(self):
         """Apply freezing configuration to model components."""
-        # 1. Freeze/unfreeze Gemma vision encoder (SigLIP)
+        # 1. Freeze/unfreeze Gemma vision encoder (SigLIP) + projector
         if self.config.freeze_gemma_vision:
             for param in self.model.vision_tower.parameters():
                 param.requires_grad = False
-            print("✓ Gemma vision encoder (SigLIP) frozen")
+            for param in self.model.multi_modal_projector.parameters():
+                param.requires_grad = False
+            print("✓ Gemma vision encoder (SigLIP) + projector frozen")
         else:
             for param in self.model.vision_tower.parameters():
                 param.requires_grad = True
-            print("✓ Gemma vision encoder (SigLIP) trainable")
+            for param in self.model.multi_modal_projector.parameters():
+                param.requires_grad = True
+            print("✓ Gemma vision encoder (SigLIP) + projector trainable")
 
         # 2. Freeze/unfreeze Gemma language model
         if self.config.freeze_gemma_language:
@@ -297,16 +301,16 @@ class TheWorld(Gemma3ForConditionalGeneration):
                 param.requires_grad = True
             print("✓ Gemma language model trainable")
 
-        # 3. Freeze/unfreeze Cosmos VAE encoder (only if Cosmos loaded)
-        if self.config.enable_world and self.cosmos_vae_encoder is not None:
+        # 3. Freeze/unfreeze Cosmos VAE (entire VAE, not just encoder)
+        if self.config.enable_world and self.cosmos_vae is not None:
             if self.config.freeze_cosmos_vae:
-                for param in self.cosmos_vae_encoder.parameters():
+                for param in self.cosmos_vae.parameters():
                     param.requires_grad = False
-                print("✓ Cosmos VAE encoder frozen")
+                print("✓ Cosmos VAE (encoder + decoder) frozen")
             else:
-                for param in self.cosmos_vae_encoder.parameters():
+                for param in self.cosmos_vae.parameters():
                     param.requires_grad = True
-                print("✓ Cosmos VAE encoder trainable")
+                print("✓ Cosmos VAE (encoder + decoder) trainable")
 
             # 4. Always keep projection layer trainable
             if self.cosmos_encoder is not None:
