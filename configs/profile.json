@@ -1,0 +1,61 @@
+{
+  "_comment": "Profiling configuration - runs ONE iteration with comprehensive profiling",
+  "_usage": "sbatch scripts/profile_training.sbatch",
+
+  "model_name": "google/gemma-3-4b-it",
+  "cosmos_model_name": "nvidia/Cosmos-Predict2-2B-Video2World",
+  "num_world_steps": 0,
+  "max_world_steps": 16,
+
+  "freeze_gemma_vision": true,
+  "freeze_gemma_language": true,
+  "freeze_cosmos_vae": true,
+
+  "learning_rate": 0.0001,
+  "batch_size": 1,
+  "gradient_accumulation_steps": 1,
+  "num_epochs": 1,
+  "warmup_steps": 0,
+  "weight_decay": 0.01,
+  "max_grad_norm": 1.0,
+
+  "use_gradient_checkpointing": false,
+  "mixed_precision": "bf16",
+
+  "output_dir": "./checkpoints/profiling",
+  "save_steps": 999999,
+  "save_total_limit": 1,
+  "resume_from_checkpoint": null,
+
+  "eval_steps": null,
+  "eval_batch_size": null,
+  "do_eval": false,
+
+  "logging_steps": 1,
+  "log_to_wandb": false,
+  "wandb_project": null,
+  "wandb_run_name": null,
+  "log_to_tensorboard": false,
+
+  "max_seq_length": 2048,
+  "num_workers": 1,
+
+  "dataset_name": "spatial_rgpt",
+  "train_dataset_path": "/home/hice1/ksohrab3/scratch/theworld/data/result_10_depth_convs.json",
+  "eval_dataset_path": null,
+  "num_samples": 2,
+  "streaming": false,
+
+  "image_folder": "/home/hice1/ksohrab3/scratch/theworld/data/openimages",
+
+  "hf_token": null,
+  "push_to_hub": false,
+  "hub_model_id": null,
+  "hub_strategy": null,
+  "hub_private_repo": null,
+
+  "_note_batch_size": "Batch size 1 to see exact per-sample cost",
+  "_note_num_samples": "Just 2 samples for quick profiling",
+  "_note_gradient_checkpointing": "Disabled by default. Use --gradient-checkpointing flag to enable",
+  "_note_output": "Each run saves to unique timestamped directory: checkpoints/profiling/YYYYMMDD_HHMMSS_<job_id>/"
+}

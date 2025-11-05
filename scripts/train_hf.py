@@ -626,9 +626,14 @@ def main():
         hub_token=config.hf_token,
         # Other
         dataloader_num_workers=config.num_workers,
+        dataloader_pin_memory=config.pin_memory,
+        dataloader_persistent_workers=config.persistent_workers if config.num_workers > 0 else False,
+        dataloader_prefetch_factor=config.prefetch_factor if config.num_workers > 0 else None,
         remove_unused_columns=False,  # Important: don't remove our custom columns
         # Distributed training - needed because we freeze most parameters
         ddp_find_unused_parameters=True,
+        # speed up
+        torch_compile=False,
     )
 
     # Setup WandB if configured

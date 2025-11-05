@@ -102,7 +102,8 @@ class CosmosEncoder(nn.Module):
             tensor_images.append(tensor_img)
 
         # Stack into batch: (B, C, H, W)
-        tensor_batch = torch.stack(tensor_images, dim=0).to(self.device, dtype=torch.bfloat16)
+        # Use non_blocking=True for async transfer (works best with pin_memory=True in DataLoader)
+        tensor_batch = torch.stack(tensor_images, dim=0).to(self.device, dtype=torch.bfloat16, non_blocking=True)
 
         # Add time dimension for VAE: (B, C, 1, H, W) where T=1 for single frame
         cosmos_input_5d = tensor_batch.unsqueeze(2)
@@ -131,6 +132,7 @@ class CosmosEncoder(nn.Module):
         # Reshape to 2D for projection: (B, H*W, 16)
         num_tokens = h * w
         reshaped_latents = latents.reshape(b, num_tokens, c)
+        # Ensure bfloat16 dtype (safety check, should already be correct)
         reshaped_latents = reshaped_latents.to(dtype=torch.bfloat16)
 
         # Project to Gemma dimension: (B, H*W, 16) → (B, H*W, 2304)

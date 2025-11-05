@@ -55,6 +55,9 @@ class TrainingConfig:
     Data:
         max_seq_length: Maximum sequence length for text
         num_workers: Number of dataloader workers
+        pin_memory: Pin memory for faster GPU transfer (reduces host-device overhead)
+        persistent_workers: Keep workers alive between epochs (reduces worker startup overhead)
+        prefetch_factor: Number of batches to prefetch per worker (improves GPU utilization)
         train_dataset_path: Path to training dataset (HF dataset or custom)
         eval_dataset_path: Path to evaluation dataset
         dataset_name: Name of dataset to use ("datacomp", "custom", etc.)
@@ -115,6 +118,9 @@ class TrainingConfig:
     # Data
     max_seq_length: int = 2048
     num_workers: int = 4
+    pin_memory: bool = True  # Pin memory for faster GPU transfer
+    persistent_workers: bool = True  # Keep workers alive between epochs
+    prefetch_factor: int = 2  # Number of batches to prefetch per worker
     train_dataset_path: Optional[str] = None
     eval_dataset_path: Optional[str] = None
     dataset_name: str = "custom"  # "datacomp", "vsr", "custom", etc.

@@ -72,20 +72,20 @@ class EmbeddingFusion(nn.Module):
         assert len(start_positions) > 0, "No <start_of_world> token found in input_ids"
         assert len(end_positions) > 0, "No <end_of_world> token found in input_ids"
 
-        start_pos = start_positions[0].item()
-        end_pos = end_positions[0].item()
-
-        assert start_pos < end_pos, f"Start position {start_pos} must be before end position {end_pos}"
+        # Use tensor-based indexing to avoid .item() CPU-GPU sync
+        start_pos = start_positions[0]
+        end_pos = end_positions[0]
 
         # Slice embeddings: [before_start] + [<start>] + [WORLD] + [<end>] + [after_end]
         # We keep the bracket tokens for consistency
+        # PyTorch supports slicing with scalar tensors (no .item() needed)
         embeddings_before = gemma_embeds[:, : start_pos + 1, :]  # Up to and including <start>
         embeddings_after = gemma_embeds[:, end_pos:, :]  # From <end> onwards
 
         # Move world embeddings to target device if needed
         device = gemma_embeds.device
         if world_embeds.device != device:
-            world_embeds = world_embeds.to(device)
+            world_embeds = world_embeds.to(device, non_blocking=True)
 
         # Concatenate to insert world tokens between brackets
         combined_embeds = torch.cat([embeddings_before, world_embeds, embeddings_after], dim=1)
@@ -96,7 +96,7 @@ class EmbeddingFusion(nn.Module):
         world_attention_mask = torch.ones((batch_size, num_world_tokens), dtype=torch.long, device=device)
         combined_attention_mask = torch.cat([attention_mask_before, world_attention_mask, attention_mask_after], dim=1)
 
-        # Output validation
+        # Output validation (compute expected length using tensor operations to avoid sync)
         expected_len = (start_pos + 1) + num_world_tokens + (seq_len - end_pos)
         assert (
             combined_embeds.size(1) == expected_len

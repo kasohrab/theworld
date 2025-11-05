@@ -3,7 +3,7 @@
 #SBATCH -N1 --ntasks-per-node=1             # 1 task per node (Accelerate handles GPUs)
 #SBATCH --gres=gpu:H200:4                  # 4 H200 GPUs
 #SBATCH --cpus-per-gpu=2                   # 2 CPUs per GPU for data loading
-#SBATCH --mem=212G                         # total RAM
+#SBATCH --mem=256G                         # total RAM
 #SBATCH -t 4:00:00                         # time limit
 #SBATCH -o logs/slurm-%j.out               # Output file with job ID
 #SBATCH --mail-type=BEGIN,END,FAIL         # Email notifications

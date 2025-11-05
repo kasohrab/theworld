@@ -35,7 +35,7 @@
   "log_to_tensorboard": true,
 
   "max_seq_length": 2048,
-  "num_workers": 8,
+  "num_workers": 2,
   "dataset_name": "spatial_rgpt",
   "train_dataset_path": "/home/hice1/ksohrab3/scratch/theworld/data/result_10_depth_convs.json",
   "eval_dataset_path": null,

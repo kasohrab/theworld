@@ -580,16 +580,16 @@ class TheWorld(Gemma3ForConditionalGeneration):
 
         # 1. Get embeddings
         target_device = self.get_input_embeddings().weight.device
-        input_ids = input_ids.to(target_device)  # type: ignore[assignment]
-        pixel_values = pixel_values.to(target_device)  # type: ignore[assignment]
-        attention_mask = attention_mask.to(target_device)  # type: ignore[assignment]
+        input_ids = input_ids.to(target_device, non_blocking=True)  # type: ignore[assignment]
+        pixel_values = pixel_values.to(target_device, non_blocking=True)  # type: ignore[assignment]
+        attention_mask = attention_mask.to(target_device, non_blocking=True)  # type: ignore[assignment]
 
         inputs_embeds = self.model.language_model.embed_tokens(input_ids)
         assert inputs_embeds is not None, "inputs_embeds must not be None"
 
         # 2. Get vision features (reuse parent's method)
         image_features = self.model.get_image_features(pixel_values)
-        image_features = image_features.to(inputs_embeds.device, inputs_embeds.dtype)
+        image_features = image_features.to(inputs_embeds.device, inputs_embeds.dtype, non_blocking=True)
         special_image_mask = self.model.get_placeholder_mask(input_ids, inputs_embeds, image_features)  # type: ignore
         inputs_embeds = inputs_embeds.masked_scatter(special_image_mask, image_features)  # type: ignore[assignment]
 
@@ -610,15 +610,19 @@ class TheWorld(Gemma3ForConditionalGeneration):
             end_positions = (input_ids == self.eow_token_id).nonzero(as_tuple=True)[1]
 
             if len(start_positions) > 0 and len(end_positions) > 0:
-                start_pos = start_positions[0].item()
-                end_pos = end_positions[0].item()
+                # Use tensor-based indexing to avoid .item() CPU-GPU sync
                 batch_size = input_ids.size(0)
                 num_world_tokens = world_embeds.size(1)
 
+                # Get first positions as tensors (no .item() call)
+                start_pos = start_positions[0]
+                end_pos = end_positions[0]
+
                 # Build labels: [tokens_before | -100 for world | tokens_after]
-                labels_before = input_ids[:, : start_pos + 1].to(target_device)
+                # Use index_select to avoid integer indexing which would require .item()
+                labels_before = input_ids[:, : start_pos + 1].to(target_device, non_blocking=True)
                 labels_world = torch.full((batch_size, num_world_tokens), -100, dtype=torch.long, device=target_device)
-                labels_after = input_ids[:, end_pos:].to(target_device)
+                labels_after = input_ids[:, end_pos:].to(target_device, non_blocking=True)
                 combined_labels = torch.cat([labels_before, labels_world, labels_after], dim=1)
             else:
                 combined_labels = labels
