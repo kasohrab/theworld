@@ -285,7 +285,7 @@ def load_datasets(config: TrainingConfig):
             train_dataset = SpatialRGPTDataset(
                 data_source=train_path,
                 image_folder=image_folder,
-                draw_bboxes=False,
+                draw_bboxes=config.draw_bboxes,
                 num_samples=config.num_samples,
             )
         else:
@@ -295,7 +295,7 @@ def load_datasets(config: TrainingConfig):
                 split="train",
                 image_folder=image_folder,
                 num_samples=config.num_samples,
-                draw_bboxes=False,
+                draw_bboxes=config.draw_bboxes,
                 hf_token=config.hf_token,
             )
 
@@ -307,7 +307,7 @@ def load_datasets(config: TrainingConfig):
                 eval_dataset = SpatialRGPTDataset(
                     data_source=eval_path,
                     image_folder=image_folder,
-                    draw_bboxes=False,
+                    draw_bboxes=config.draw_bboxes,
                     num_samples=None,
                 )
             else:
@@ -316,7 +316,7 @@ def load_datasets(config: TrainingConfig):
                     split="validation",
                     image_folder=image_folder,
                     num_samples=None,
-                    draw_bboxes=False,
+                    draw_bboxes=config.draw_bboxes,
                     hf_token=config.hf_token,
                 )
 
@@ -487,46 +487,12 @@ def main():
     print(f"\nInitializing model...")
 
     if resume_checkpoint:
-        # Resume from checkpoint - two-stage loading to avoid meta tensors
+        # Resume from checkpoint using TheWorld.from_checkpoint()
         print(f"  Loading from checkpoint: {resume_checkpoint}")
-        print(f"  This preserves all trained weights (projection layers, etc.)")
-
-        # Stage 1: Initialize full model from base (creates all real tensors)
-        model = TheWorld.from_pretrained(
-            config.model_name,
-            enable_world=True,
-            cosmos_model_name=config.cosmos_model_name,
-            freeze_gemma_vision=config.freeze_gemma_vision,
-            freeze_gemma_language=config.freeze_gemma_language,
-            freeze_cosmos_vae=config.freeze_cosmos_vae,
+        model = TheWorld.from_checkpoint(
+            checkpoint_path=resume_checkpoint,
             torch_dtype=torch.bfloat16 if config.mixed_precision == "bf16" else torch.float32,
         )
-
-        # Stage 2: Load checkpoint weights on top
-        checkpoint_dir = Path(resume_checkpoint)
-        safetensors_path = checkpoint_dir / "model.safetensors"
-        bin_path = checkpoint_dir / "pytorch_model.bin"
-
-        if safetensors_path.exists():
-            from safetensors.torch import load_file
-
-            state_dict = load_file(safetensors_path)
-        elif bin_path.exists():
-            state_dict = torch.load(bin_path, weights_only=False)
-        else:
-            raise FileNotFoundError(
-                f"No checkpoint found in {checkpoint_dir}. " "Expected model.safetensors or pytorch_model.bin"
-            )
-
-        # Only load parameters that are trainable in the fresh model
-        trainable_keys = {name for name, param in model.named_parameters() if param.requires_grad}
-        checkpoint_to_load = {k: v for k, v in state_dict.items() if k in trainable_keys}
-
-        print(f"  Checkpoint weights: {len(state_dict)} total")
-        print(f"  Loading trainable weights: {len(checkpoint_to_load)}")
-
-        model.load_state_dict(checkpoint_to_load, strict=False)
-        print(f"  ✓ Checkpoint weights loaded successfully")
     else:
         # Fresh initialization from base pretrained models
         print(f"  Using from_pretrained() for fresh initialization...")

@@ -64,6 +64,7 @@ class TrainingConfig:
         num_samples: Limit dataset to N samples (None = use all)
         streaming: Use streaming mode for large datasets
         question_template: Question template for image captioning datasets
+        draw_bboxes: Draw bounding boxes on images for visual grounding (spatial reasoning tasks)
 
     HuggingFace:
         hf_token: HuggingFace API token for private datasets/models
@@ -128,6 +129,7 @@ class TrainingConfig:
     streaming: bool = False  # Use streaming mode for large datasets
     question_template: str = "Describe this image in detail."
     image_folder: Optional[str] = None  # Path to image folder (for datasets like VSR)
+    draw_bboxes: bool = False  # Draw bounding boxes on images for spatial reasoning tasks
 
     # HuggingFace
     hf_token: Optional[str] = None  # HF API token

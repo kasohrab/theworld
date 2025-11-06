@@ -138,13 +138,23 @@ class TheWorld(Gemma3ForConditionalGeneration):
         # 2. Check config type to determine loading path
         if isinstance(config, TheWorldConfig):
             # Case B: Loading saved TheWorld checkpoint
-            print(f"Loading saved TheWorld checkpoint from: {pretrained_model_name_or_path}")
-            model = super(TheWorld, cls).from_pretrained(
-                pretrained_model_name_or_path, *model_args, config=config, **kwargs
-            )
-            # Components should already be loaded from checkpoint
-            # But we need to reload Cosmos and processor since they're not saved
-            device_to_use = config.gemma_model_name if hasattr(config, 'gemma_model_name') else pretrained_model_name_or_path
+            # Use two-stage loading to avoid meta tensors
+            import os
+            from pathlib import Path
+
+            # Check if local path or Hub repo ID
+            if os.path.exists(pretrained_model_name_or_path):
+                # Local checkpoint
+                return cls.from_checkpoint(pretrained_model_name_or_path, device=device, **kwargs)
+            else:
+                # Hub checkpoint
+                hf_token = kwargs.pop('token', None) or kwargs.pop('use_auth_token', None)
+                return cls.from_checkpoint_hub(
+                    repo_id=pretrained_model_name_or_path,
+                    device=device,
+                    hf_token=hf_token,
+                    **kwargs
+                )
 
         else:
             # Case A: Initializing new TheWorld from base Gemma
@@ -264,6 +274,134 @@ class TheWorld(Gemma3ForConditionalGeneration):
         model._apply_freezing()
 
         return model
+
+    @classmethod
+    def from_checkpoint(
+        cls,
+        checkpoint_path: str,
+        device: Optional[str] = None,
+        **kwargs: Any
+    ) -> "TheWorld":
+        """
+        Load TheWorld from a local checkpoint directory.
+
+        This performs two-stage loading to avoid meta tensor issues:
+        1. Initialize base models (Gemma + Cosmos) with full weights
+        2. Apply checkpoint weights on top (only trainable parameters)
+
+        Args:
+            checkpoint_path: Path to checkpoint directory
+            device: Device to load model on
+            **kwargs: Additional arguments passed to from_pretrained
+
+        Returns:
+            Initialized TheWorld model with checkpoint weights loaded
+
+        Example:
+            >>> model = TheWorld.from_checkpoint("./checkpoints/checkpoint-1000")
+        """
+        from pathlib import Path
+        from safetensors.torch import load_file
+
+        checkpoint_path = Path(checkpoint_path)
+        if not checkpoint_path.exists():
+            raise ValueError(f"Checkpoint path does not exist: {checkpoint_path}")
+
+        # Load config to get base model names and settings
+        config = TheWorldConfig.from_pretrained(checkpoint_path)
+
+        # Stage 1: Initialize from base models (gets all weights, no meta tensors)
+        print(f"Loading base model: {config.gemma_model_name}")
+        model = cls.from_pretrained(
+            config.gemma_model_name,
+            device=device,
+            enable_world=config.enable_world,
+            cosmos_model_name=config.cosmos_model_name,
+            freeze_gemma_vision=config.freeze_gemma_vision,
+            freeze_gemma_language=config.freeze_gemma_language,
+            freeze_cosmos_vae=config.freeze_cosmos_vae,
+            **kwargs
+        )
+
+        # Stage 2: Load checkpoint weights
+        print(f"Loading checkpoint weights from: {checkpoint_path}")
+
+        # Try safetensors first, then PyTorch
+        if (checkpoint_path / "model.safetensors").exists():
+            state_dict = load_file(checkpoint_path / "model.safetensors")
+        elif (checkpoint_path / "pytorch_model.bin").exists():
+            state_dict = torch.load(checkpoint_path / "pytorch_model.bin", map_location="cpu")
+        else:
+            raise ValueError(f"No checkpoint file found in {checkpoint_path}")
+
+        # Load weights (strict=False allows missing keys for frozen components)
+        missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
+
+        print(f"✓ Loaded checkpoint weights ({len(state_dict)} tensors)")
+        if missing_keys:
+            print(f"  Note: {len(missing_keys)} weights loaded from base model (expected for frozen components)")
+
+        return model
+
+    @classmethod
+    def from_checkpoint_hub(
+        cls,
+        repo_id: str,
+        checkpoint_name: Optional[str] = None,
+        device: Optional[str] = None,
+        hf_token: Optional[str] = None,
+        **kwargs: Any
+    ) -> "TheWorld":
+        """
+        Load TheWorld from a HuggingFace Hub checkpoint.
+
+        This performs two-stage loading to avoid meta tensor issues:
+        1. Initialize base models (Gemma + Cosmos) with full weights
+        2. Apply checkpoint weights on top (only trainable parameters)
+
+        Args:
+            repo_id: HuggingFace Hub repository ID (e.g., "username/theworld-spatial")
+            checkpoint_name: Specific checkpoint subdirectory (e.g., "checkpoint-1000").
+                           If None, loads from root of repo.
+            device: Device to load model on
+            hf_token: HuggingFace API token for private repos
+            **kwargs: Additional arguments passed to from_pretrained
+
+        Returns:
+            Initialized TheWorld model with checkpoint weights loaded
+
+        Example:
+            >>> # Load latest checkpoint from root
+            >>> model = TheWorld.from_checkpoint_hub("kasohrab/theworld-spatial")
+
+            >>> # Load specific checkpoint
+            >>> model = TheWorld.from_checkpoint_hub(
+            ...     "kasohrab/theworld-spatial",
+            ...     checkpoint_name="checkpoint-1000"
+            ... )
+        """
+        from huggingface_hub import snapshot_download
+        import os
+
+        # Download checkpoint from Hub
+        print(f"Downloading checkpoint from Hub: {repo_id}")
+        if checkpoint_name:
+            print(f"  Checkpoint: {checkpoint_name}")
+
+        local_dir = snapshot_download(
+            repo_id=repo_id,
+            allow_patterns=["*.json", "*.safetensors", "*.bin"] if not checkpoint_name else [f"{checkpoint_name}/*"],
+            token=hf_token or os.environ.get("HF_TOKEN"),
+        )
+
+        # Determine checkpoint path
+        if checkpoint_name:
+            checkpoint_path = os.path.join(local_dir, checkpoint_name)
+        else:
+            checkpoint_path = local_dir
+
+        # Use from_checkpoint for the actual loading
+        return cls.from_checkpoint(checkpoint_path, device=device, **kwargs)
 
     def get_trainable_parameters(self):
         """Return count and percentage of trainable parameters."""

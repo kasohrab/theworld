@@ -135,6 +135,63 @@ class HFDatasetWrapper(Dataset):
         }
 
 
+def create_multi_turn_labels(
+    input_ids: torch.Tensor, messages: List[Dict[str, str]], processor: "AutoProcessor"
+) -> torch.Tensor:
+    """
+    Create labels for multi-turn conversation by masking user turns.
+
+    Strategy: Find turn boundaries using Gemma's special tokens, then mask user turns with -100
+    while keeping assistant turns as actual token IDs for loss calculation.
+
+    Args:
+        input_ids: Full tokenized conversation sequence
+        messages: List of messages with role and content
+        processor: Gemma processor for tokenizer access
+
+    Returns:
+        labels: Same as input_ids but with user portions masked with -100
+    """
+    labels = input_ids.clone()
+    tokenizer = processor.tokenizer
+
+    # Get special token IDs
+    start_turn_id = tokenizer.convert_tokens_to_ids("<start_of_turn>")
+    end_turn_id = tokenizer.convert_tokens_to_ids("<end_of_turn>")
+
+    # Tokenize "user" and "model" to get role indicators
+    user_tokens = tokenizer.encode("user", add_special_tokens=False)
+    model_tokens = tokenizer.encode("model", add_special_tokens=False)
+
+    # Handle case where role is single token or multiple tokens
+    user_id = user_tokens[0] if user_tokens else None
+    model_id = model_tokens[0] if model_tokens else None
+
+    # Scan through tokens and mask user turns
+    i = 0
+    while i < len(input_ids):
+        # Find <start_of_turn>
+        if input_ids[i] == start_turn_id and i + 1 < len(input_ids):
+            role_token = input_ids[i + 1]
+
+            # Find matching <end_of_turn>
+            j = i + 2
+            while j < len(input_ids) and input_ids[j] != end_turn_id:
+                j += 1
+
+            # If this is a user turn, mask it
+            if role_token == user_id:
+                labels[i : j + 1] = -100  # Mask entire turn including markers
+            # If model turn, keep it (already copied from input_ids)
+            # else: labels remain as input_ids (model turn gets trained)
+
+            i = j + 1
+        else:
+            i += 1
+
+    return labels
+
+
 def theworld_collate_fn(
     batch: List[Dict[str, Any]],
     processor: "AutoProcessor",
@@ -164,8 +221,6 @@ def theworld_collate_fn(
 
     # First pass: filter out samples that exceed max_length
     images = [item["image"].convert("RGB") if item["image"].mode != "RGB" else item["image"] for item in batch]
-    texts = [item["text"] for item in batch]
-    labels_raw = [item.get("label") for item in batch]
 
     # We need to process each item to find the length of the prompt part,
     # then the length of the full part, so we can mask the labels correctly.
@@ -173,13 +228,35 @@ def theworld_collate_fn(
     labels_list = []
     pixel_values_list = []
 
-    for image, text, label in zip(images, texts, labels_raw):
-        # 1. Create the full conversation with correctly formatted content
-        messages_full = [
-            {"role": "user", "content": [{"type": "image", "image": image}, {"type": "text", "text": text}]},
-        ]
-        if label is not None:
-            messages_full.append({"role": "assistant", "content": [{"type": "text", "text": label}]})
+    for item, image in zip(batch, images):
+        # Check if item has 'messages' field (multi-turn) or text/label (single-turn)
+        if "messages" in item and item["messages"] is not None:
+            # Multi-turn format
+            messages = item["messages"]
+
+            # Build messages_full for apply_chat_template
+            # First message includes image
+            messages_full = [
+                {
+                    "role": "user",
+                    "content": [{"type": "image", "image": image}, {"type": "text", "text": messages[0]["content"]}],
+                }
+            ]
+
+            # Add remaining turns (text only)
+            for msg in messages[1:]:
+                messages_full.append({"role": msg["role"], "content": [{"type": "text", "text": msg["content"]}]})
+        else:
+            # Single-turn format (backward compatible)
+            text = item["text"]
+            label = item.get("label")
+            messages = None  # Mark as single-turn
+
+            messages_full = [
+                {"role": "user", "content": [{"type": "image", "image": image}, {"type": "text", "text": text}]},
+            ]
+            if label is not None:
+                messages_full.append({"role": "assistant", "content": [{"type": "text", "text": label}]})
 
         # Tokenize the full conversation to get the combined input_ids
         full_tokenized = processor.apply_chat_template(
@@ -197,30 +274,34 @@ def theworld_collate_fn(
             logger.warning(f"Skipping sample with sequence length {seq_len} > max_length {max_length}")
             continue
 
-        # 2. Calculate prompt length using tokenizer only (avoid re-processing image)
-        # Create text-only messages for prompt length calculation
-        messages_prompt_text = [
-            {"role": "user", "content": text},
-        ]
-        # Use tokenizer directly (no image processing) with chat template
-        prompt_ids = processor.tokenizer.apply_chat_template(
-            messages_prompt_text,
-            tokenize=True,
-            add_generation_prompt=True,
-            return_tensors="pt",
-        )
-        prompt_len = prompt_ids.shape[1]
+        # Create labels based on format
+        if messages is not None:
+            # Multi-turn: Use sophisticated turn masking
+            current_labels = create_multi_turn_labels(full_ids, messages, processor)
+        else:
+            # Single-turn: Use simple prompt masking
+            # Calculate prompt length using tokenizer only (avoid re-processing image)
+            text = item["text"]
+            messages_prompt_text = [
+                {"role": "user", "content": text},
+            ]
+            # Use tokenizer directly (no image processing) with chat template
+            prompt_ids = processor.tokenizer.apply_chat_template(
+                messages_prompt_text,
+                tokenize=True,
+                add_generation_prompt=True,
+                return_tensors="pt",
+            )
+            prompt_len = prompt_ids.shape[1]
 
-        # 3. Create labels: a copy of the full IDs, but with the prompt masked out
-        current_labels = full_ids.clone()
-        current_labels[:prompt_len] = -100
+            # Create labels: a copy of the full IDs, but with the prompt masked out
+            current_labels = full_ids.clone()
+            current_labels[:prompt_len] = -100
 
         input_ids_list.append(full_ids)
         labels_list.append(current_labels)
 
         # Gemma's apply_chat_template doesn't return pixel_values, so preprocess manually
-        import sys
-
         if "pixel_values" in full_tokenized:
             pixel_values_list.append(full_tokenized["pixel_values"])
         else:

@@ -383,9 +383,24 @@ class SpatialRGPTDataset(TorchDataset):
                 labels = [f"Region [{i}]" for i in range(len(bboxes))]
                 pil_image = draw_bounding_boxes(pil_image, clamped_bboxes, labels=labels)
 
+        # Helper function for region token replacement
+        def replace_region_tokens(text: str) -> str:
+            """Replace <mask> <depth> tokens with Region [0], Region [1], etc."""
+            region_idx = 0
+            # Replace <mask> <depth> first (most specific)
+            while "<mask> <depth>" in text:
+                text = text.replace("<mask> <depth>", f"Region [{region_idx}]", 1)
+                region_idx += 1
+            # Replace standalone <mask> (fallback)
+            while "<mask>" in text:
+                text = text.replace("<mask>", f"Region [{region_idx}]", 1)
+                region_idx += 1
+            # Remove remaining <depth> tokens
+            text = text.replace("<depth>", "").strip()
+            return text
+
         # Parse conversations field (training data format: result_10_depth_convs.json)
-        question = None
-        answer = None
+        messages = None
 
         if "conversations" in raw:
             conversations = raw["conversations"]
@@ -396,31 +411,32 @@ class SpatialRGPTDataset(TorchDataset):
                 except Exception:
                     conversations = []
 
-            # Extract first human-gpt Q/A pair
+            # Extract ALL conversation turns (not just first Q&A pair)
             if isinstance(conversations, list) and len(conversations) >= 2:
-                # First turn should be human with question
-                human_turn = conversations[0].get("value", "") if conversations[0].get("from") == "human" else ""
-                # Second turn should be gpt with answer
-                gpt_turn = conversations[1].get("value", "") if conversations[1].get("from") == "gpt" else ""
+                messages = []
+                for i, conv in enumerate(conversations):
+                    role = "user" if conv.get("from") == "human" else "assistant"
+                    content = conv.get("value", "")
 
-                # Strip <image> prefix and special tokens from question
-                question = human_turn.replace("<image>\n", "").replace("<image>", "").strip()
-                answer = gpt_turn.strip()
+                    # Remove <image> token from first message only
+                    if i == 0:
+                        content = content.replace("<image>\n", "").replace("<image>", "")
 
-                # Strip <mask> and <depth> special tokens (TheWorld doesn't support these)
-                # Replace with placeholder text that describes the region
-                question = question.replace("<mask> <depth>", "the region").replace("<mask>", "the region").replace(
-                    "<depth>", ""
-                )
-                answer = answer.replace("<mask> <depth>", "the region").replace("<mask>", "the region").replace(
-                    "<depth>", ""
-                )
+                    # Replace <mask> <depth> with Region [N] sequentially
+                    content = replace_region_tokens(content.strip())
+
+                    messages.append({"role": role, "content": content})
 
         # Fallback to evaluation format fields (SpatialRGPT-Bench)
-        if not question:
+        if not messages:
             question = raw.get("text_q") or raw.get("question") or raw.get("prompt") or ""
-        if not answer:
             answer = raw.get("answer")
+            if question:
+                messages = [
+                    {"role": "user", "content": question},
+                ]
+                if answer:
+                    messages.append({"role": "assistant", "content": answer})
 
         # Extract question type and category from qa_info
         qa_type = None
@@ -441,10 +457,7 @@ class SpatialRGPTDataset(TorchDataset):
         return {
             "id": raw.get("id") or raw.get("example_id") or idx,
             "image": pil_image,
-            "text": question,  # TheWorld collator expects "text" key
-            "label": answer,  # TheWorld collator expects "label" key
-            "question": question,  # Keep for backward compatibility
-            "answer": answer,  # Keep for backward compatibility
+            "messages": messages,  # Multi-turn conversations
             "choices": raw.get("choices"),  # Usually None for SpatialRGPT-Bench
             "qa_type": qa_type,
             "qa_category": qa_category,
