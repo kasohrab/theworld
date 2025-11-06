@@ -1,0 +1,15 @@
+python sft_gemma.py \
+  --model_name_or_path google/gemma-3-4b-it \
+  --dataset cambridgeltl/vsr_random \
+  --split train \
+  --image_key image \
+  --question_key caption \
+  --answer_key label \
+  --image_dir /home/hice1/ajin37/cs8803-vlm/theworld/python/theworld/datasets/vsr/images \
+  --output_dir /storage/ice1/8/2/ajin37/tmp/training/checkpoints/gemma3_sft_vsr_frozen_vision_2 \
+  --per_device_train_batch_size 8 \
+  --num_train_epochs 3 \
+  --max_length 1024 \
+  --save_steps 1 \
+  --save_strategy epoch \
+  --freeze_gemma_vision \
