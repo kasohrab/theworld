@@ -498,9 +498,10 @@ def main():
         print(f"  Using from_pretrained() for fresh initialization...")
         print(f"  Base model: {config.model_name}")
         print(f"  Cosmos model: {config.cosmos_model_name}")
+        print(f"  Enable world: {config.enable_world}")
         model = TheWorld.from_pretrained(
             config.model_name,
-            enable_world=True,
+            enable_world=config.enable_world,
             cosmos_model_name=config.cosmos_model_name,
             freeze_gemma_vision=config.freeze_gemma_vision,
             freeze_gemma_language=config.freeze_gemma_language,
@@ -509,7 +510,7 @@ def main():
             # No device_map - let Accelerate handle device placement
         )
 
-    print(f"  World embeddings: enabled")
+    print(f"  World embeddings: {'enabled' if config.enable_world else 'disabled'}")
     print(f"  num_world_steps: {config.num_world_steps}")
     print(f"  Accelerate will handle device placement automatically")
 

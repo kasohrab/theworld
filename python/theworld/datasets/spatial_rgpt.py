@@ -129,6 +129,7 @@ class SpatialRGPTDataset(TorchDataset):
                 # JSONL format (one JSON object per line) - parse line by line
                 print(f"  Loading JSONL format (streaming)...")
                 self._load_jsonl_images_first(path)
+                
     def _load_json_array_images_first(self, path: Path) -> None:
         """Load JSON array with images-first approach: scan images, filter JSON."""
         import ijson

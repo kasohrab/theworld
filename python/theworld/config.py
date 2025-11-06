@@ -14,6 +14,7 @@ class TrainingConfig:
 
     Model Configuration:
         model_name: HuggingFace model ID for Gemma 3
+        enable_world: If True, load Cosmos world model; if False, train Gemma-only baseline
         num_world_steps: Number of future frames to predict (0 = current only)
         max_world_steps: Maximum frames for temporal embeddings
         freeze_gemma_vision: If True, freeze Gemma's SigLIP vision encoder
@@ -77,6 +78,7 @@ class TrainingConfig:
     # Model configuration
     model_name: str = DEFAULT_GEMMA_MODEL
     cosmos_model_name: str = DEFAULT_COSMOS_MODEL
+    enable_world: bool = True
     num_world_steps: int = 0
     max_world_steps: int = 16
     freeze_gemma_vision: bool = True

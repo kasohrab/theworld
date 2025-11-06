@@ -17,12 +17,12 @@
   "weight_decay": 0.01,
   "max_grad_norm": 1.0,
 
-  "use_gradient_checkpointing": true,
+  "use_gradient_checkpointing": false,
   "mixed_precision": "bf16",
 
   "output_dir": "./checkpoints/gemma-spatial-bbox",
   "save_steps": 1000,
-  "save_total_limit": 3,
+  "save_total_limit": 1,
   "resume_from_checkpoint": null,
 
   "eval_steps": 5000,

@@ -64,8 +64,18 @@ def draw_bounding_boxes(
 
         # Draw rectangle with thick outline
         for offset in range(thickness):
+            # Calculate inner coordinates with offset
+            inner_x1 = x1 + offset
+            inner_y1 = y1 + offset
+            inner_x2 = x2 - offset
+            inner_y2 = y2 - offset
+
+            # Skip if box would become inverted (too small for more offset layers)
+            if inner_x2 <= inner_x1 or inner_y2 <= inner_y1:
+                break
+
             draw.rectangle(
-                [x1 + offset, y1 + offset, x2 - offset, y2 - offset],
+                [inner_x1, inner_y1, inner_x2, inner_y2],
                 outline=color,
                 width=1,
             )
