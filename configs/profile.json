@@ -41,7 +41,7 @@
   "num_workers": 1,
 
   "dataset_name": "spatial_rgpt",
-  "train_dataset_path": "${TMPDIR}/openspatial/result_10_depth_convs.json",
+  "train_dataset_path": "/tmp/openspatial/result_10_depth_convs.json",
   "eval_dataset_path": null,
   "num_samples": 2,
   "streaming": false,

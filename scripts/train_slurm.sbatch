@@ -183,6 +183,15 @@ print(config.get('output_dir', './checkpoints'))
 echo ""
 echo "============================================================"
 
+# Pre-download SpatialRGPT Dataset JSON (for multi-GPU training)
+echo ""
+echo "============================================================"
+echo "Pre-download SpatialRGPT Dataset JSON"
+echo "============================================================"
+python scripts/download_spatial_json.py --skip-if-exists
+echo "✓ Dataset JSON ready at /tmp/openspatial/result_10_depth_convs.json"
+echo ""
+
 # Find latest checkpoint if exists (automatically resume from most recent)
 RESUME_FROM=""
 if [ -d "$OUTPUT_DIR" ]; then

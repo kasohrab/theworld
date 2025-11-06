@@ -4,7 +4,7 @@
 #SBATCH --gres=gpu:H100:2                  # 2 H100 GPUs
 #SBATCH --cpus-per-gpu=4                   # 4 CPUs per GPU for data loading
 #SBATCH --mem=256G                         # total RAM
-#SBATCH -t 4:00:00                         # time limit
+#SBATCH -t 1:00:00                         # time limit
 #SBATCH -o logs/slurm-%j.out               # Output file with job ID
 #SBATCH --mail-type=BEGIN,END,FAIL         # Email notifications
 #SBATCH --mail-user=ksohrab3@gatech.edu    # Email address
@@ -243,6 +243,15 @@ echo "HF_HOME: $HF_HOME"
 # export NCCL_DEBUG=INFO
 # export NCCL_DEBUG_SUBSYS=ALL
 # echo "NCCL debugging: enabled (NCCL_DEBUG=INFO)"
+
+# Pre-download SpatialRGPT Dataset JSON (for multi-GPU training)
+echo ""
+echo "============================================================"
+echo "Pre-download SpatialRGPT Dataset JSON"
+echo "============================================================"
+python scripts/download_spatial_json.py --skip-if-exists
+echo "✓ Dataset JSON ready at /tmp/openspatial/result_10_depth_convs.json"
+echo ""
 
 # Record training start time
 TRAIN_START=$(date +%s)
