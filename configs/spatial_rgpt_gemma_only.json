@@ -1,0 +1,58 @@
+{
+  "_comment": "Gemma-only baseline training on SpatialRGPT (~900K spatial reasoning examples) - Full fine-tuning",
+
+  "model_name": "google/gemma-3-4b-it",
+  "cosmos_model_name": "nvidia/Cosmos-Predict2-2B-Video2World",
+  "enable_world": false,
+  "num_world_steps": 0,
+  "freeze_gemma_vision": false,
+  "freeze_gemma_language": false,
+  "freeze_cosmos_vae": true,
+
+  "learning_rate": 0.0001,
+  "batch_size": 2,
+  "gradient_accumulation_steps": 1,
+  "num_epochs": 1,
+  "warmup_steps": 50,
+  "weight_decay": 0.01,
+  "max_grad_norm": 1.0,
+
+  "use_gradient_checkpointing": true,
+  "mixed_precision": "bf16",
+
+  "output_dir": "./checkpoints/gemma-spatial-bbox",
+  "save_steps": 1000,
+  "save_total_limit": 3,
+  "resume_from_checkpoint": null,
+
+  "eval_steps": 5000,
+  "eval_batch_size": 8,
+  "do_eval": false,
+
+  "logging_steps": 50,
+  "log_to_wandb": false,
+  "wandb_project": "gemma-spatial",
+  "wandb_run_name": "gemma-only-full-finetune-v1",
+  "log_to_tensorboard": true,
+
+  "max_seq_length": 2048,
+  "num_workers": 2,
+  "dataset_name": "spatial_rgpt",
+  "train_dataset_path": "/home/hice1/ksohrab3/scratch/theworld/data/result_10_depth_convs.json",
+  "eval_dataset_path": null,
+  "num_samples": null,
+  "streaming": false,
+
+  "_dataset_instructions": "See docs/training/spatial-rgpt.md for complete setup guide",
+  "_data_loading": "Uses images-first approach: scans image_folder for available images, then loads only matching JSON samples",
+  "_progressive_training": "Re-initialize dataset between batches to pick up newly downloaded images. Dataset length reflects actual available images.",
+
+  "image_folder": "/home/hice1/ksohrab3/scratch/theworld/data/openimages",
+  "draw_bboxes": true,
+
+  "hf_token": null,
+  "push_to_hub": true,
+  "hub_model_id": "kasohrab/gemma-spatial-bbox",
+  "hub_strategy": "every_save",
+  "hub_private_repo": false
+}

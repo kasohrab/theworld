@@ -81,7 +81,7 @@ def draw_bounding_boxes(
 
 
 def clamp_bbox(bbox: List[float], image_width: int, image_height: int) -> List[float]:
-    """Clamp bounding box coordinates to image boundaries.
+    """Clamp bounding box coordinates to image boundaries and normalize.
 
     Args:
         bbox: Bounding box as [x1, y1, x2, y2]
@@ -89,18 +89,33 @@ def clamp_bbox(bbox: List[float], image_width: int, image_height: int) -> List[f
         image_height: Image height in pixels
 
     Returns:
-        Clamped bounding box
+        Clamped and normalized bounding box (ensures x1 <= x2, y1 <= y2, and minimum 1px area)
 
     Example:
         >>> clamp_bbox([-10, -5, 200, 300], 100, 100)
         [0, 0, 100, 100]
+        >>> clamp_bbox([50, 80, 30, 20], 100, 100)  # Inverted bbox
+        [30, 20, 50, 80]
     """
     x1, y1, x2, y2 = bbox
 
+    # Clamp to image boundaries
     x1 = max(0, min(image_width, x1))
     x2 = max(0, min(image_width, x2))
     y1 = max(0, min(image_height, y1))
     y2 = max(0, min(image_height, y2))
+
+    # Normalize coordinates (fix inverted bboxes)
+    if x2 < x1:
+        x1, x2 = x2, x1
+    if y2 < y1:
+        y1, y2 = y2, y1
+
+    # Ensure minimum 1px area (prevent zero-area boxes)
+    if x2 == x1:
+        x2 = min(x1 + 1, image_width)
+    if y2 == y1:
+        y2 = min(y1 + 1, image_height)
 
     return [x1, y1, x2, y2]
 

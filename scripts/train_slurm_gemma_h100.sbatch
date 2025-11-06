@@ -1,8 +1,8 @@
 #!/bin/bash
-#SBATCH -J theworld-training               # Job name
+#SBATCH -J gemma-spatial-training          # Job name
 #SBATCH -N1 --ntasks-per-node=1             # 1 task per node (Accelerate handles GPUs)
-#SBATCH --gres=gpu:H200:2                  # 4 H200 GPUs
-#SBATCH --cpus-per-gpu=4                   # 2 CPUs per GPU for data loading
+#SBATCH --gres=gpu:H100:2                  # 2 H100 GPUs
+#SBATCH --cpus-per-gpu=4                   # 4 CPUs per GPU for data loading
 #SBATCH --mem=256G                         # total RAM
 #SBATCH -t 4:00:00                         # time limit
 #SBATCH -o logs/slurm-%j.out               # Output file with job ID
@@ -10,7 +10,7 @@
 #SBATCH --mail-user=ksohrab3@gatech.edu    # Email address
 
 echo "============================================================"
-echo "TheWorld Training - SLURM Job ${SLURM_JOB_ID}"
+echo "Gemma-Only Training on SpatialRGPT - SLURM Job ${SLURM_JOB_ID}"
 echo "Started at: $(date)"
 echo "============================================================"
 
@@ -69,7 +69,7 @@ if [ -z "$HF_TOKEN" ]; then
     echo "  Then before submitting job:"
     echo "    export HF_TOKEN=\$(cat ~/.hf_token)"
     echo ""
-    echo "  Or use: sbatch scripts/train_slurm.sbatch <config.json> [accelerate_config.yaml]"
+    echo "  Or use: sbatch scripts/train_slurm_gemma_h100.sbatch <config.json> [accelerate_config.yaml]"
     echo "          (script auto-loads token from ~/.hf_token)"
     echo ""
 
@@ -91,7 +91,7 @@ echo ""
 # Parse arguments
 if [ -z "$1" ]; then
     echo "ERROR: No config file provided!"
-    echo "Usage: sbatch scripts/train_slurm.sbatch <config.json> [accelerate_config.yaml]"
+    echo "Usage: sbatch scripts/train_slurm_gemma_h100.sbatch <config.json> [accelerate_config.yaml]"
     echo ""
     echo "Arguments:"
     echo "  config.json             - Training configuration (required)"
@@ -150,12 +150,14 @@ with open(config_file) as f:
 
 # Display key configuration items
 print(f"Model: {config.get('model_name', 'Not specified')}")
+print(f"Enable World Model: {config.get('enable_world', True)}")
 print(f"Cosmos Model: {config.get('cosmos_model_name', 'Not specified')}")
 print(f"Dataset: {config.get('dataset_name', 'Not specified')}")
 print(f"Batch Size: {config.get('batch_size', 'Not specified')}")
 print(f"Learning Rate: {config.get('learning_rate', 'Not specified')}")
 print(f"Num Epochs: {config.get('num_epochs', 'Not specified')}")
 print(f"Mixed Precision: {config.get('mixed_precision', 'Not specified')}")
+print(f"Gradient Checkpointing: {config.get('use_gradient_checkpointing', False)}")
 print(f"World Steps: {config.get('num_world_steps', 0)}")
 
 # Freezing configuration
@@ -163,7 +165,8 @@ print(f"\nTrainable Components:")
 print(f"  Gemma Vision: {'TRAINABLE' if not config.get('freeze_gemma_vision', True) else 'frozen'}")
 print(f"  Gemma Language: {'TRAINABLE' if not config.get('freeze_gemma_language', True) else 'frozen'}")
 print(f"  Cosmos VAE: {'TRAINABLE' if not config.get('freeze_cosmos_vae', True) else 'frozen'}")
-print(f"  Projection Layers: ALWAYS TRAINABLE")
+if config.get('enable_world', True):
+    print(f"  Projection Layers: ALWAYS TRAINABLE")
 
 output_dir = config.get('output_dir', './checkpoints')
 print(f"\nOutput Directory: {output_dir}")
@@ -247,7 +250,7 @@ TRAIN_START=$(date +%s)
 # Run training with Accelerate
 echo ""
 echo "============================================================"
-echo "Starting Training (4x H200)"
+echo "Starting Training (2x H100 GPUs - Gemma-only Full Fine-tuning)"
 echo "============================================================"
 echo "Start time: $(date)"
 
