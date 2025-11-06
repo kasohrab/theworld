@@ -279,6 +279,41 @@ def load_datasets(config: TrainingConfig):
         # Check if train_dataset_path is a local JSON file or HF dataset
         train_path = config.train_dataset_path or "a8cheng/OpenSpatialDataset"
 
+        # Auto-download JSON to $TMPDIR if needed
+        if config.train_dataset_path and "${TMPDIR}" in config.train_dataset_path:
+            tmpdir = os.environ.get("TMPDIR", "/tmp")
+            json_path = config.train_dataset_path.replace("${TMPDIR}", tmpdir)
+
+            if not os.path.exists(json_path):
+                print(f"Downloading OpenSpatialDataset JSON to {tmpdir}...")
+                download_dir = f"{tmpdir}/openspatial"
+                os.makedirs(download_dir, exist_ok=True)
+
+                # Download using huggingface-cli
+                import subprocess
+
+                try:
+                    subprocess.run(
+                        [
+                            "huggingface-cli",
+                            "download",
+                            "a8cheng/OpenSpatialDataset",
+                            "result_10_depth_convs.json",
+                            "--repo-type",
+                            "dataset",
+                            "--local-dir",
+                            download_dir,
+                        ],
+                        check=True,
+                    )
+                    print(f"Download complete: {json_path}")
+                except subprocess.CalledProcessError as e:
+                    raise RuntimeError(f"Failed to download OpenSpatialDataset JSON: {e}") from e
+            else:
+                print(f"Using cached JSON from $TMPDIR: {json_path}")
+
+            train_path = json_path
+
         if os.path.exists(train_path):
             # Local JSON file
             print(f"  Loading from local JSON: {train_path}")
