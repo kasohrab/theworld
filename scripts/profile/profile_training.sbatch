@@ -94,11 +94,11 @@ fi
 echo "✓ Config found: $CONFIG_FILE"
 
 # Verify profiling script exists
-if [ ! -f "scripts/profile_training.py" ]; then
-    echo "ERROR: scripts/profile_training.py not found!"
+if [ ! -f "scripts/profile/profile_training.py" ]; then
+    echo "ERROR: scripts/profile/profile_training.py not found!"
     exit 1
 fi
-echo "✓ Profiling script found: scripts/profile_training.py"
+echo "✓ Profiling script found: scripts/profile/profile_training.py"
 
 echo ""
 
@@ -168,7 +168,7 @@ echo "Profile steps: $PROFILE_STEPS"
 echo ""
 
 PYTHONPATH=/storage/ice1/7/7/ksohrab3/theworld/python:$PYTHONPATH \
-uv run python scripts/profile_training.py \
+uv run python scripts/profile/profile_training.py \
     --config "$CONFIG_FILE" \
     --profile-steps "$PROFILE_STEPS"
 

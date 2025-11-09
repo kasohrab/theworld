@@ -19,7 +19,7 @@
   "use_gradient_checkpointing": false,
   "mixed_precision": "bf16",
 
-  "output_dir": "./checkpoints/theworld-spatial-bbox",
+  "output_dir": "./checkpoints/theworld-spatial-bbox-fixed",
   "save_steps": 1000,
   "save_total_limit": 3,
   "resume_from_checkpoint": null,
@@ -31,7 +31,7 @@
   "logging_steps": 50,
   "log_to_wandb": false,
   "wandb_project": "theworld-spatial",
-  "wandb_run_name": "multi-turn-bbox-v1",
+  "wandb_run_name": "multi-turn-bbox-fixed",
   "log_to_tensorboard": true,
 
   "max_seq_length": 2048,
@@ -51,7 +51,7 @@
 
   "hf_token": null,
   "push_to_hub": true,
-  "hub_model_id": "kasohrab/theworld-spatial-bbox",
+  "hub_model_id": "kasohrab/theworld-spatial-bbox-fixed",
   "hub_strategy": "every_save",
   "hub_private_repo": false
 }

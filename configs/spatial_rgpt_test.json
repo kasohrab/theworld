@@ -45,7 +45,7 @@
 
   "_dataset_setup_instructions": [
     "This config uses the local SpatialRGPT JSON file (result_10_depth_convs.json)",
-    "Download images first: python scripts/download_openimages.py --num-images 1000",
+    "Download images first: python scripts/openimages/download_openimages.py --num-images 1000",
     "Then run: python downloader.py data/test_images.txt --download_folder=/home/hice1/ksohrab3/scratch/theworld/data/openimages --num_processes=10",
     "Ready to run: python scripts/train_hf.py --config configs/spatial_rgpt_test.json"
   ],

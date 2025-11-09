@@ -188,7 +188,7 @@ echo ""
 echo "============================================================"
 echo "Pre-download SpatialRGPT Dataset JSON"
 echo "============================================================"
-python scripts/download_spatial_json.py --skip-if-exists
+python scripts/spatial/download_spatial_json.py --skip-if-exists
 echo "✓ Dataset JSON ready at /tmp/openspatial/result_10_depth_convs.json"
 echo ""
 

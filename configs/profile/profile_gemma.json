@@ -1,18 +1,19 @@
 {
-  "_comment": "Profiling configuration - runs ONE iteration with comprehensive profiling",
-  "_usage": "sbatch scripts/profile_training.sbatch",
+  "_comment": "Gemma baseline profiling - no world model, full fine-tuning (matches train_slurm_gemma_h100.sbatch)",
+  "_usage": "python scripts/profile/profile_training.py --config configs/profile/profile_gemma.json",
 
   "model_name": "google/gemma-3-4b-it",
   "cosmos_model_name": "nvidia/Cosmos-Predict2-2B-Video2World",
+  "enable_world": false,
   "num_world_steps": 0,
   "max_world_steps": 16,
 
-  "freeze_gemma_vision": true,
-  "freeze_gemma_language": true,
+  "freeze_gemma_vision": false,
+  "freeze_gemma_language": false,
   "freeze_cosmos_vae": true,
 
   "learning_rate": 0.0001,
-  "batch_size": 1,
+  "batch_size": 2,
   "gradient_accumulation_steps": 1,
   "num_epochs": 1,
   "warmup_steps": 0,
@@ -54,8 +55,9 @@
   "hub_strategy": null,
   "hub_private_repo": null,
 
-  "_note_batch_size": "Batch size 1 to see exact per-sample cost",
+  "_note_config": "Gemma baseline - NO world model, all Gemma components unfrozen",
+  "_note_batch_size": "Batch size 2 to match production Gemma training",
   "_note_num_samples": "Just 2 samples for quick profiling",
-  "_note_gradient_checkpointing": "Disabled by default. Use --gradient-checkpointing flag to enable",
-  "_note_output": "Each run saves to unique timestamped directory: checkpoints/profiling/YYYYMMDD_HHMMSS_<job_id>/"
+  "_note_freeze": "Vision and language unfrozen to match production training",
+  "_note_output": "Each run saves to: checkpoints/profiling/YYYYMMDD_HHMMSS_<job_id>_gemma/"
 }

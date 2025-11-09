@@ -20,7 +20,7 @@
   "use_gradient_checkpointing": false,
   "mixed_precision": "bf16",
 
-  "output_dir": "./checkpoints/gemma-spatial-bbox",
+  "output_dir": "./checkpoints/gemma-spatial-bbox-fixed",
   "save_steps": 1000,
   "save_total_limit": 1,
   "resume_from_checkpoint": null,
@@ -32,7 +32,7 @@
   "logging_steps": 50,
   "log_to_wandb": false,
   "wandb_project": "gemma-spatial",
-  "wandb_run_name": "gemma-only-full-finetune-v1",
+  "wandb_run_name": "gemma-only-full-finetune-fixed",
   "log_to_tensorboard": true,
 
   "max_seq_length": 2048,
@@ -52,7 +52,7 @@
 
   "hf_token": null,
   "push_to_hub": true,
-  "hub_model_id": "kasohrab/gemma-spatial-bbox",
+  "hub_model_id": "kasohrab/gemma-spatial-bbox-fixed",
   "hub_strategy": "every_save",
   "hub_private_repo": false
 }

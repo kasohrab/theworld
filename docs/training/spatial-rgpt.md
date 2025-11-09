@@ -13,7 +13,7 @@ Complete guide to training TheWorld on the OpenSpatialDataset (~900K spatial rea
 **Setup (one-time):**
 ```bash
 # Download OpenImages
-sbatch scripts/download_openimages.sbatch
+sbatch scripts/openimages/download_openimages.sbatch
 ```
 
 **Train:**
@@ -102,7 +102,7 @@ Training loop:
 ### Automated Download (Recommended)
 
 ```bash
-sbatch scripts/download_openimages.sbatch
+sbatch scripts/openimages/download_openimages.sbatch
 ```
 
 **What this does:**
@@ -193,7 +193,7 @@ You can start training before all images download!
 
 ```bash
 # Step 1: Start download (background)
-sbatch scripts/download_openimages.sbatch
+sbatch scripts/openimages/download_openimages.sbatch
 
 # Step 2: Wait for some images
 watch -n 60 'find data/openimages -name "*.jpg" | wc -l'
@@ -249,10 +249,10 @@ If download job stops:
 
 ```bash
 # Check progress and create resume file
-python scripts/find_download_resume_point.py
+python scripts/openimages/find_download_resume_point.py
 
 # Resume downloading (auto-uses resume file)
-sbatch scripts/download_openimages.sbatch
+sbatch scripts/openimages/download_openimages.sbatch
 ```
 
 ### Resume Training
@@ -323,7 +323,7 @@ ls data/openimages/*.jpg | head -5
 
 **Fix:** Resubmit (auto-resumes from last position):
 ```bash
-sbatch scripts/download_openimages.sbatch
+sbatch scripts/openimages/download_openimages.sbatch
 ```
 
 ### Out of Memory During Training

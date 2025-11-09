@@ -101,7 +101,7 @@ def find_resume_point(required_images_path: Path, image_folder: Path, output_pat
     print(f"      --download_folder={image_folder} \\")
     print(f"      --num_processes=24")
     print(f"\nOr submit SLURM job:")
-    print(f"  sbatch scripts/download_openimages.sbatch")
+    print(f"  sbatch scripts/openimages/download_openimages.sbatch")
 
     return True
 

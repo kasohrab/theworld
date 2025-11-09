@@ -51,18 +51,14 @@ def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(description="Profile TheWorld training iteration")
 
-    # Generate default timestamped output directory
+    # Default output directory (will be updated with model type after config is loaded)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    job_id = os.environ.get("SLURM_JOB_ID", "")
-    if job_id:
-        default_output_dir = f"checkpoints/profiling/{timestamp}_{job_id}"
-    else:
-        default_output_dir = f"checkpoints/profiling/{timestamp}"
+    default_output_dir = f"checkpoints/profiling/{timestamp}"
 
     parser.add_argument(
         "--config",
         type=str,
-        default="configs/profile.json",
+        default="configs/profile/profile.json",
         help="Path to training config JSON file",
     )
     parser.add_argument(
@@ -108,12 +104,14 @@ def load_config(config_path: str) -> TrainingConfig:
     return TrainingConfig.from_dict(config_dict)
 
 
-def save_profiling_data(prof, output_dir: str, top_k: int = 100):
+def save_profiling_data(prof, output_dir: str, config: TrainingConfig, enable_world: bool, top_k: int = 100):
     """Save profiling data to structured files (JSON and CSV).
 
     Args:
         prof: PyTorch profiler object
         output_dir: Directory to save files
+        config: Training configuration
+        enable_world: Whether world model is enabled
         top_k: Number of top operations to save (default: 100)
     """
     # Get profiling data
@@ -209,6 +207,17 @@ def save_profiling_data(prof, output_dir: str, top_k: int = 100):
     # 4. Save comprehensive JSON with all data
     json_path = f"{output_dir}/profiling_summary.json"
     summary_data = {
+        "model_config": {
+            "model_name": config.model_name,
+            "enable_world": enable_world,
+            "cosmos_model_name": config.cosmos_model_name if enable_world else None,
+            "freeze_gemma_vision": config.freeze_gemma_vision,
+            "freeze_gemma_language": config.freeze_gemma_language,
+            "freeze_cosmos_vae": config.freeze_cosmos_vae,
+            "batch_size": config.batch_size,
+            "use_gradient_checkpointing": config.use_gradient_checkpointing,
+            "mixed_precision": config.mixed_precision,
+        },
         "gpu_memory": {
             "allocated_gb": torch.cuda.memory_allocated() / (1024**3) if torch.cuda.is_available() else 0,
             "reserved_gb": torch.cuda.memory_reserved() / (1024**3) if torch.cuda.is_available() else 0,
@@ -347,8 +356,22 @@ def main():
     if not config.hf_token:
         config.hf_token = os.environ.get("HF_TOKEN")
 
+    # Get enable_world from config (default to True for backward compatibility)
+    enable_world = getattr(config, "enable_world", True)
+
+    # Update output directory with model type if using default path
+    if args.output_dir == f"checkpoints/profiling/{datetime.now().strftime('%Y%m%d_%H%M%S')}":
+        job_id = os.environ.get("SLURM_JOB_ID", "")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        model_type = "gemma" if not enable_world else "theworld"
+        if job_id:
+            args.output_dir = f"checkpoints/profiling/{timestamp}_{job_id}_{model_type}"
+        else:
+            args.output_dir = f"checkpoints/profiling/{timestamp}_{model_type}"
+
     print("Configuration:")
     print(f"  Model: {config.model_name}")
+    print(f"  Enable world model: {enable_world}")
     print(f"  Dataset: {config.dataset_name}")
     print(f"  Samples: {args.num_samples}")
     print(f"  Batch size: {config.batch_size}")
@@ -366,11 +389,12 @@ def main():
     # Initialize model
     print("Initializing model...")
     print(f"  Loading from: {config.model_name}")
-    print(f"  Cosmos model: {config.cosmos_model_name}")
+    if enable_world:
+        print(f"  Cosmos model: {config.cosmos_model_name}")
 
     model = TheWorld.from_pretrained(
         config.model_name,
-        enable_world=True,
+        enable_world=enable_world,
         cosmos_model_name=config.cosmos_model_name,
         freeze_gemma_vision=config.freeze_gemma_vision,
         freeze_gemma_language=config.freeze_gemma_language,
@@ -509,7 +533,7 @@ def main():
     print("=" * 80)
     print("SAVING PROFILING DATA")
     print("=" * 80)
-    save_profiling_data(prof, args.output_dir, top_k=100)
+    save_profiling_data(prof, args.output_dir, config, enable_world, top_k=100)
 
     # Print summary tables (top 30 for console)
     print("=" * 80)

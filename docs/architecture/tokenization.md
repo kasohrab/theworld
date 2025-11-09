@@ -69,53 +69,46 @@ Valid speakers: `user`, `model`
 
 ## TheWorld Custom Tokens
 
-TheWorld adds two custom tokens using Gemma's reserved custom token slots:
+TheWorld adds two custom tokens using HuggingFace's `add_special_tokens()` API:
 
-### Custom Token Slots
+### Custom Token Overview
 
-Gemma reserves **99 custom token slots** (`tokenizer.special_tokens.CUSTOM + 0` to `98`) for application-specific tokens. We use the first two:
-
-| Slot | Token | Abbreviation | Purpose |
-|------|-------|--------------|---------|
-| 0 | `<start_of_world>` | SOW | Marks beginning of world model embeddings |
-| 1 | `<end_of_world>` | EOW | Marks end of world model embeddings |
+| Token | Abbreviation | Purpose |
+|-------|--------------|---------|
+| `<start_of_world>` | SOW | Marks beginning of world model embeddings |
+| `<end_of_world>` | EOW | Marks end of world model embeddings |
 
 ### Token Registration
 
-Tokens are registered during `TheWorld.__init__()`:
+Tokens are registered during `TheWorld.from_pretrained()`:
 
 ```python
-# python/theworld/modeling/theworld.py:141-163
-custom_tokens = {
-    0: "<start_of_world>",  # SOW
-    1: "<end_of_world>",    # EOW
-}
+# python/theworld/modeling/theworld.py:240-251
+custom_tokens = ["<start_of_world>", "<end_of_world>"]
 
-# Add to tokenizer
-num_added = processor.tokenizer.add_special_tokens(
-    {"additional_special_tokens": list(custom_tokens.values())}
+# Add to tokenizer (appends to vocabulary)
+num_added = model.processor.tokenizer.add_special_tokens(
+    {"additional_special_tokens": custom_tokens}
 )
 
-# Resize embedding layer
+# Resize embedding layer to accommodate new tokens
 if num_added > 0:
-    gemma.resize_token_embeddings(len(processor.tokenizer))
+    model.resize_token_embeddings(len(model.processor.tokenizer))
 
-# Store token IDs
-self.sow_token_id = processor.tokenizer.convert_tokens_to_ids("<start_of_world>")
-self.eow_token_id = processor.tokenizer.convert_tokens_to_ids("<end_of_world>")
+# Store token IDs for later use
+model.sow_token_id = model.processor.tokenizer.convert_tokens_to_ids("<start_of_world>")
+model.eow_token_id = model.processor.tokenizer.convert_tokens_to_ids("<end_of_world>")
 ```
 
-**Why custom slots?** This is the proper way to extend Gemma's vocabulary for application-specific needs. The tokens are:
-- Part of the official vocabulary
-- Have dedicated embedding vectors (trainable)
-- Won't conflict with future Gemma updates
+**Implementation Note**: While Gemma 3 provides 99 reserved "unused" token slots (accessible via Google's `gemma` package with `gm.text.Gemma3Tokenizer`), we use HuggingFace's standard `add_special_tokens()` API for better compatibility with the `transformers` ecosystem. This appends tokens to the vocabulary rather than using reserved slots.
 
 ### Token IDs
 
-The exact token IDs depend on the tokenizer vocabulary size:
-- Gemma 3 base vocabulary: 256,000 tokens
-- After adding custom tokens: 256,002 tokens
-- Typical IDs: `sow_token_id = 256000`, `eow_token_id = 256001`
+The tokens are appended to Gemma 3's vocabulary:
+- Gemma 3 base vocabulary: **262,145 tokens**
+- After adding custom tokens: **262,147 tokens**
+- **`<start_of_world>` ID: 262,145** (original_vocab_size + 0)
+- **`<end_of_world>` ID: 262,146** (original_vocab_size + 1)
 
 **Access via constants**:
 ```python
@@ -146,12 +139,12 @@ After apply_chat_template():
   <start_of_turn> model
 
 Token ID sequence (showing first 20 tokens):
-  [2, 106, 1645, 256000, 256001, 108, 262144, 262144, 262144, ...]
+  [2, 106, 1645, 262145, 262146, 108, 262144, 262144, 262144, ...]
    │   │    │      │       │      │     │       │       │
    │   │    │      │       │      │     └─ Image tokens (×264)
    │   │    │      │       │      └─ <start_of_image>
-   │   │    │      │       └─ <end_of_world>
-   │   │    │      └─ <start_of_world>
+   │   │    │      │       └─ <end_of_world> (262146)
+   │   │    │      └─ <start_of_world> (262145)
    │   │    └─ "user"
    │   └─ <start_of_turn>
    └─ <bos>
@@ -563,7 +556,7 @@ print(f"Ignore tokens (-100 count): {(labels == -100).sum().item()}")
 1. **Always use `processor.apply_chat_template()`** - Never manual tokenization
 2. **PIL Images in messages** - Not tensors or paths
 3. **BOS at position 0** - Automatically added by chat template
-4. **World tokens use custom slots** - Proper Gemma vocabulary extension
+4. **World tokens extend vocabulary** - Added via HuggingFace's add_special_tokens() API
 5. **Validation is critical** - Check token structure during development
 6. **Skip special tokens when decoding** - For clean output
 

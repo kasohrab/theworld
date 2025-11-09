@@ -27,6 +27,7 @@ from typing import Optional, Dict, Any, List
 from pathlib import Path
 from io import BytesIO
 import time
+import re
 import requests
 from PIL import Image
 from torch.utils.data import Dataset as TorchDataset
@@ -365,8 +366,12 @@ class SpatialRGPTDataset(TorchDataset):
                 f"This should not happen with images-first loading - please report this bug."
             )
 
-        # Draw bounding boxes if requested and available
-        if self.draw_bboxes and pil_image is not None and "bbox" in raw:
+        # Extract and deduplicate bboxes to build global region ID mapping
+        # This mapping ensures text "Region [N]" matches drawn bbox labels
+        bbox_to_global_region = {}
+        unique_bboxes = []
+
+        if "bbox" in raw:
             bboxes = raw["bbox"]
             # Parse if it's a string (HuggingFace serialization)
             if isinstance(bboxes, str):
@@ -375,30 +380,29 @@ class SpatialRGPTDataset(TorchDataset):
                 except Exception:
                     bboxes = []
 
-            if bboxes and len(bboxes) > 0:
-                # Clamp bboxes to image boundaries
-                img_width, img_height = pil_image.size
-                clamped_bboxes = [clamp_bbox(bbox, img_width, img_height) for bbox in bboxes]
+            # Build mapping: bbox_index -> global_region_id
+            # Deduplication ensures same physical region gets same ID
+            for idx, bbox in enumerate(bboxes):
+                bbox_tuple = tuple(bbox)
+                # Check if this bbox already exists in unique list
+                if bbox_tuple not in [tuple(u) for u in unique_bboxes]:
+                    # New unique region
+                    region_id = len(unique_bboxes)
+                    unique_bboxes.append(bbox)
+                else:
+                    # Duplicate - find which region this matches
+                    region_id = [tuple(u) for u in unique_bboxes].index(bbox_tuple)
+                bbox_to_global_region[idx] = region_id
 
-                # Draw boxes with labels
-                labels = [f"Region [{i}]" for i in range(len(bboxes))]
-                pil_image = draw_bounding_boxes(pil_image, clamped_bboxes, labels=labels)
+        # Draw bounding boxes if requested and available
+        if self.draw_bboxes and pil_image is not None and unique_bboxes:
+            # Clamp bboxes to image boundaries
+            img_width, img_height = pil_image.size
+            clamped_bboxes = [clamp_bbox(bbox, img_width, img_height) for bbox in unique_bboxes]
 
-        # Helper function for region token replacement
-        def replace_region_tokens(text: str) -> str:
-            """Replace <mask> <depth> tokens with Region [0], Region [1], etc."""
-            region_idx = 0
-            # Replace <mask> <depth> first (most specific)
-            while "<mask> <depth>" in text:
-                text = text.replace("<mask> <depth>", f"Region [{region_idx}]", 1)
-                region_idx += 1
-            # Replace standalone <mask> (fallback)
-            while "<mask>" in text:
-                text = text.replace("<mask>", f"Region [{region_idx}]", 1)
-                region_idx += 1
-            # Remove remaining <depth> tokens
-            text = text.replace("<depth>", "").strip()
-            return text
+            # Draw boxes with GLOBAL labels (matches text references)
+            labels = [f"Region [{i}]" for i in range(len(unique_bboxes))]
+            pil_image = draw_bounding_boxes(pil_image, clamped_bboxes, labels=labels)
 
         # Parse conversations field (training data format: result_10_depth_convs.json)
         messages = None
@@ -415,6 +419,12 @@ class SpatialRGPTDataset(TorchDataset):
             # Extract ALL conversation turns (not just first Q&A pair)
             if isinstance(conversations, list) and len(conversations) >= 2:
                 messages = []
+                # Track mask counter across ALL conversation turns
+                # (important: counter must persist across turns, not reset)
+                global_mask_counter = 0
+                # Track turn-local→global mapping for current turn (for assistant responses)
+                turn_local_to_global = {}
+
                 for i, conv in enumerate(conversations):
                     role = "user" if conv.get("from") == "human" else "assistant"
                     content = conv.get("value", "")
@@ -423,8 +433,57 @@ class SpatialRGPTDataset(TorchDataset):
                     if i == 0:
                         content = content.replace("<image>\n", "").replace("<image>", "")
 
-                    # Replace <mask> <depth> with Region [N] sequentially
-                    content = replace_region_tokens(content.strip())
+                    if role == "user":
+                        # USER MESSAGE: Replace <mask> tokens with global Region IDs
+                        # Build turn-local→global mapping for this turn
+                        turn_local_to_global = {}
+                        turn_local_counter = 0
+
+                        # Replace <mask> <depth> first (most specific)
+                        while "<mask> <depth>" in content:
+                            if global_mask_counter in bbox_to_global_region:
+                                global_region_id = bbox_to_global_region[global_mask_counter]
+                                turn_local_to_global[turn_local_counter] = global_region_id
+                                content = content.replace("<mask> <depth>", f"Region [{global_region_id}]", 1)
+                            else:
+                                # Fallback to sequential if no bbox mapping (shouldn't happen)
+                                turn_local_to_global[turn_local_counter] = global_mask_counter
+                                content = content.replace("<mask> <depth>", f"Region [{global_mask_counter}]", 1)
+                            global_mask_counter += 1
+                            turn_local_counter += 1
+
+                        # Replace standalone <mask> (fallback)
+                        while "<mask>" in content:
+                            if global_mask_counter in bbox_to_global_region:
+                                global_region_id = bbox_to_global_region[global_mask_counter]
+                                turn_local_to_global[turn_local_counter] = global_region_id
+                                content = content.replace("<mask>", f"Region [{global_region_id}]", 1)
+                            else:
+                                # Fallback to sequential if no bbox mapping
+                                turn_local_to_global[turn_local_counter] = global_mask_counter
+                                content = content.replace("<mask>", f"Region [{global_mask_counter}]", 1)
+                            global_mask_counter += 1
+                            turn_local_counter += 1
+
+                        # Remove remaining <depth> tokens
+                        content = content.replace("<depth>", "").strip()
+
+                    else:
+                        # ASSISTANT MESSAGE: Replace turn-local Region [N] with global IDs
+                        # The original data has "Region [0]", "Region [1]", etc. (turn-local)
+                        # We need to convert these to global IDs using the mapping from the previous user turn
+
+                        def replace_region_id(match):
+                            turn_local_id = int(match.group(1))
+                            if turn_local_id in turn_local_to_global:
+                                global_id = turn_local_to_global[turn_local_id]
+                                return f"Region [{global_id}]"
+                            else:
+                                # Keep original if no mapping (shouldn't happen)
+                                return match.group(0)
+
+                        # Replace all "Region [N]" patterns with global IDs
+                        content = re.sub(r'Region \[(\d+)\]', replace_region_id, content)
 
                     messages.append({"role": role, "content": content})
 
@@ -433,10 +492,54 @@ class SpatialRGPTDataset(TorchDataset):
             question = raw.get("text_q") or raw.get("question") or raw.get("prompt") or ""
             answer = raw.get("answer")
             if question:
+                # Replace <mask> tokens with global Region IDs (eval format)
+                # Build turn-local→global mapping for this question
+                turn_local_to_global = {}
+                global_mask_counter = 0
+                turn_local_counter = 0
+
+                while "<mask> <depth>" in question:
+                    if global_mask_counter in bbox_to_global_region:
+                        global_region_id = bbox_to_global_region[global_mask_counter]
+                        turn_local_to_global[turn_local_counter] = global_region_id
+                        question = question.replace("<mask> <depth>", f"Region [{global_region_id}]", 1)
+                    else:
+                        turn_local_to_global[turn_local_counter] = global_mask_counter
+                        question = question.replace("<mask> <depth>", f"Region [{global_mask_counter}]", 1)
+                    global_mask_counter += 1
+                    turn_local_counter += 1
+
+                while "<mask>" in question:
+                    if global_mask_counter in bbox_to_global_region:
+                        global_region_id = bbox_to_global_region[global_mask_counter]
+                        turn_local_to_global[turn_local_counter] = global_region_id
+                        question = question.replace("<mask>", f"Region [{global_region_id}]", 1)
+                    else:
+                        turn_local_to_global[turn_local_counter] = global_mask_counter
+                        question = question.replace("<mask>", f"Region [{global_mask_counter}]", 1)
+                    global_mask_counter += 1
+                    turn_local_counter += 1
+
+                question = question.replace("<depth>", "").strip()
+
                 messages = [
                     {"role": "user", "content": question},
                 ]
+
                 if answer:
+                    # Convert answer's turn-local Region [N] to global IDs
+
+                    def replace_region_id(match):
+                        turn_local_id = int(match.group(1))
+                        if turn_local_id in turn_local_to_global:
+                            global_id = turn_local_to_global[turn_local_id]
+                            return f"Region [{global_id}]"
+                        else:
+                            # Keep original if no mapping (shouldn't happen)
+                            return match.group(0)
+
+                    # Replace all "Region [N]" patterns with global IDs
+                    answer = re.sub(r'Region \[(\d+)\]', replace_region_id, answer)
                     messages.append({"role": "assistant", "content": answer})
 
         # Extract question type and category from qa_info

@@ -5,6 +5,127 @@ from PIL import Image, ImageDraw, ImageFont
 import numpy as np
 
 
+def _labels_overlap(label_bbox1: Tuple[int, int, int, int], label_bbox2: Tuple[int, int, int, int]) -> bool:
+    """Check if two label bounding boxes overlap.
+
+    Args:
+        label_bbox1: First label bbox as (x1, y1, x2, y2)
+        label_bbox2: Second label bbox as (x1, y1, x2, y2)
+
+    Returns:
+        True if labels overlap, False otherwise
+    """
+    x1_1, y1_1, x2_1, y2_1 = label_bbox1
+    x1_2, y1_2, x2_2, y2_2 = label_bbox2
+
+    # Check for non-overlap conditions
+    if x2_1 <= x1_2 or x2_2 <= x1_1 or y2_1 <= y1_2 or y2_2 <= y1_1:
+        return False
+    return True
+
+
+def _find_non_overlapping_positions(
+    bboxes: List[List[float]],
+    labels: List[str],
+    image_size: Tuple[int, int],
+    font: ImageFont.FreeTypeFont,
+) -> List[Tuple[int, int]]:
+    """Find non-overlapping label positions for all bboxes.
+
+    Args:
+        bboxes: List of bounding boxes as [x1, y1, x2, y2]
+        labels: List of label strings
+        image_size: Image dimensions as (width, height)
+        font: Font to use for measuring label size
+
+    Returns:
+        List of (x, y) positions for each label
+    """
+    img_width, img_height = image_size
+    label_positions_bboxes = []  # Track label bboxes to detect overlaps
+    label_positions_xy = []  # Final (x, y) positions
+
+    # Create temporary draw object for measuring text
+    temp_img = Image.new("RGB", (1, 1))
+    temp_draw = ImageDraw.Draw(temp_img)
+
+    # Position strategies to try (in priority order)
+    strategies = [
+        "top-outside",
+        "bottom-outside",
+        "top-inside",
+        "right-outside",
+        "left-outside",
+        "bottom-inside",
+    ]
+
+    for i, (bbox, label) in enumerate(zip(bboxes, labels)):
+        x1, y1, x2, y2 = map(int, bbox)
+
+        # Calculate label size
+        temp_bbox = temp_draw.textbbox((0, 0), label, font=font)
+        label_width = temp_bbox[2] - temp_bbox[0]
+        label_height = temp_bbox[3] - temp_bbox[1]
+        padding = 2
+
+        # Try each strategy
+        found_position = False
+        for strategy in strategies:
+            # Calculate position based on strategy
+            if strategy == "top-outside":
+                pos_x = x1
+                pos_y = max(0, y1 - label_height - padding)
+            elif strategy == "bottom-outside":
+                pos_x = x1
+                pos_y = min(img_height - label_height, y2 + padding)
+            elif strategy == "top-inside":
+                pos_x = x1 + padding
+                pos_y = y1 + padding
+            elif strategy == "bottom-inside":
+                pos_x = x1 + padding
+                pos_y = max(y1, y2 - label_height - padding)
+            elif strategy == "right-outside":
+                pos_x = min(img_width - label_width, x2 + padding)
+                pos_y = y1
+            elif strategy == "left-outside":
+                pos_x = max(0, x1 - label_width - padding)
+                pos_y = y1
+            else:
+                pos_x = x1
+                pos_y = max(0, y1 - label_height - padding)
+
+            # Clamp to image boundaries
+            pos_x = max(0, min(img_width - label_width, pos_x))
+            pos_y = max(0, min(img_height - label_height, pos_y))
+
+            # Calculate label bbox at this position
+            label_bbox = (pos_x, pos_y, pos_x + label_width, pos_y + label_height)
+
+            # Check if this position overlaps with any existing labels
+            overlaps = any(_labels_overlap(label_bbox, existing) for existing in label_positions_bboxes)
+
+            if not overlaps:
+                # Found non-overlapping position
+                label_positions_xy.append((pos_x, pos_y))
+                label_positions_bboxes.append(label_bbox)
+                found_position = True
+                break
+
+        # If all strategies failed, use offset fallback
+        if not found_position:
+            offset = (i % 10) * 8  # Stagger overlapping labels
+            pos_x = x1 + offset
+            pos_y = max(0, y1 - label_height - padding) + offset
+            pos_x = max(0, min(img_width - label_width, pos_x))
+            pos_y = max(0, min(img_height - label_height, pos_y))
+
+            label_bbox = (pos_x, pos_y, pos_x + label_width, pos_y + label_height)
+            label_positions_xy.append((pos_x, pos_y))
+            label_positions_bboxes.append(label_bbox)
+
+    return label_positions_xy
+
+
 def draw_bounding_boxes(
     image: Image.Image,
     bboxes: List[List[float]],
@@ -13,6 +134,8 @@ def draw_bounding_boxes(
     thickness: int = 3,
 ) -> Image.Image:
     """Draw bounding boxes with labels on an image.
+
+    Automatically positions labels to avoid overlaps when bboxes are close together.
 
     Args:
         image: PIL Image to draw on
@@ -57,6 +180,10 @@ def draw_bounding_boxes(
     except Exception:
         font = ImageFont.load_default()
 
+    # Calculate non-overlapping label positions for all bboxes
+    label_positions = _find_non_overlapping_positions(bboxes, labels, image.size, font)
+
+    # Draw bounding boxes and labels
     for i, bbox in enumerate(bboxes):
         x1, y1, x2, y2 = map(int, bbox)
         color = colors[i]
@@ -80,12 +207,15 @@ def draw_bounding_boxes(
                 width=1,
             )
 
+        # Get pre-calculated label position
+        label_x, label_y = label_positions[i]
+
         # Draw label background
-        label_bbox = draw.textbbox((x1, y1 - 20), label, font=font)
+        label_bbox = draw.textbbox((label_x, label_y), label, font=font)
         draw.rectangle(label_bbox, fill=color)
 
         # Draw label text
-        draw.text((x1, y1 - 20), label, fill="white", font=font)
+        draw.text((label_x, label_y), label, fill="white", font=font)
 
     return img_copy
 

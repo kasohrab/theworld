@@ -26,7 +26,7 @@ fi
 
 if [ ! -f "data/required_images.txt" ]; then
     echo "ERROR: data/required_images.txt not found!"
-    echo "Run: python scripts/download_openimages.py --output data/required_images.txt"
+    echo "Run: python scripts/openimages/download_openimages.py --output data/required_images.txt"
     exit 1
 fi
 
@@ -35,7 +35,7 @@ echo ""
 echo "============================================================"
 echo "Detecting Resume Point"
 echo "============================================================"
-python scripts/find_download_resume_point.py
+python scripts/openimages/find_download_resume_point.py
 
 # Use resume file if it exists, otherwise use full list
 if [ -f "data/resume_images.txt" ]; then

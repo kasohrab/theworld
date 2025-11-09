@@ -7,16 +7,16 @@ All ranks can access the same file, avoiding per-rank $TMPDIR issues.
 
 Usage:
     # Download to /tmp (default, shared on node)
-    python scripts/download_spatial_json.py
+    python scripts/spatial/download_spatial_json.py
 
     # Download to custom location
-    python scripts/download_spatial_json.py --output /path/to/scratch/openspatial
+    python scripts/spatial/download_spatial_json.py --output /path/to/scratch/openspatial
 
     # Skip download if exists
-    python scripts/download_spatial_json.py --skip-if-exists
+    python scripts/spatial/download_spatial_json.py --skip-if-exists
 
     # Check if file exists without downloading
-    python scripts/download_spatial_json.py --check-only
+    python scripts/spatial/download_spatial_json.py --check-only
 """
 
 import argparse
@@ -100,16 +100,16 @@ def main():
         epilog="""
 Examples:
   # Download to /tmp (default)
-  python scripts/download_spatial_json.py
+  python scripts/spatial/download_spatial_json.py
 
   # Skip re-download if exists
-  python scripts/download_spatial_json.py --skip-if-exists
+  python scripts/spatial/download_spatial_json.py --skip-if-exists
 
   # Download to scratch space
-  python scripts/download_spatial_json.py --output data/openspatial
+  python scripts/spatial/download_spatial_json.py --output data/openspatial
 
   # Check if file exists
-  python scripts/download_spatial_json.py --check-only
+  python scripts/spatial/download_spatial_json.py --check-only
         """,
     )
     parser.add_argument(

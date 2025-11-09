@@ -6,7 +6,7 @@ re-running expensive inference.
 
 Usage:
     # Judge with Gemma
-    python scripts/judge_predictions.py \
+    python scripts/spatial/judge_predictions.py \
         --predictions outputs/predictions.jsonl \
         --judge gemma \
         --model google/gemma-3-4b-it \
@@ -14,13 +14,13 @@ Usage:
 
     # Judge with GPT-4
     export OPENAI_API_KEY=sk-...
-    python scripts/judge_predictions.py \
+    python scripts/spatial/judge_predictions.py \
         --predictions outputs/predictions.jsonl \
         --judge gpt4 \
         --output outputs/results_judged_gpt4.jsonl
 
     # Judge with GPT-OSS
-    python scripts/judge_predictions.py \
+    python scripts/spatial/judge_predictions.py \
         --predictions outputs/predictions.jsonl \
         --judge gpt-oss \
         --gpt-oss-model openai/gpt-oss-120b \
@@ -29,15 +29,9 @@ Usage:
 
 import argparse
 import json
-import sys
-from pathlib import Path
 from typing import List, Dict, Any
 
 from tqdm import tqdm
-
-# Add project root to path
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PROJECT_ROOT))
 
 
 def load_predictions(path: str) -> List[Dict[str, Any]]:

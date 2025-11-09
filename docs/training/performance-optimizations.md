@@ -382,7 +382,7 @@ Navigate to http://localhost:6006 and click the "PROFILE" tab to see:
 
 **Option 3: Text Report**
 ```bash
-python scripts/analyze_profile.py \
+python scripts/profile/analyze_profile.py \
     --trace_dir checkpoints/llava_pretrain_full/profile_traces \
     --output profile_report.md
 ```
@@ -476,7 +476,7 @@ The profiler is implemented as a `ProfilerCallback` that:
 
 **Source files:**
 - `scripts/train_hf.py`: ProfilerCallback class + integration
-- `scripts/analyze_profile.py`: Trace analysis script
+- `scripts/profile/analyze_profile.py`: Trace analysis script
 
 ---
 

@@ -2,7 +2,7 @@
 Evaluate TheWorld on SpatialRGPT-Bench with Gemma-as-judge evaluation.
 
 Usage (example):
-    python scripts/eval_spatial_rgpt.py \
+    python scripts/spatial/eval_spatial_rgpt.py \
         --data-path /path/to/SpatialRGPT-Bench/val_SpatialRGPT-Bench.jsonl \
         --image-folder /path/to/SpatialRGPT-Bench/images \
         --model username/theworld-model \
@@ -18,20 +18,49 @@ This script:
 
 import argparse
 import json
-import sys
 from pathlib import Path
 from typing import Optional
 
+import torch
 from tqdm import tqdm
-
-# Add project root to path
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PROJECT_ROOT))
 
 from theworld import TheWorld
 from theworld.constants import DEFAULT_GEMMA_MODEL
 from theworld.datasets.spatial_rgpt import SpatialRGPTDataset
 from theworld.evaluation import evaluate_with_gemma, calculate_spatial_accuracy
+
+
+def generate_output_filename(
+    model_name: str,
+    load_cosmos: bool,
+    num_world_steps: int,
+    max_samples: int,
+) -> str:
+    """Generate a descriptive output filename based on config.
+
+    Examples:
+        - spatial_bench_gemma-3-4b-it_baseline.jsonl
+        - spatial_bench_theworld-checkpoint_world-4steps.jsonl
+        - spatial_bench_gemma-3-4b-it_baseline_50samples.jsonl
+    """
+    # Extract model name (strip path and special chars)
+    model_slug = model_name.replace("/", "-").replace("_", "-")
+    if "google-gemma" in model_slug or model_slug.startswith("gemma-"):
+        model_slug = model_slug.split("google-")[-1]  # Remove google/ prefix
+
+    # Add world config
+    if load_cosmos:
+        if num_world_steps > 0:
+            config = f"world-{num_world_steps}steps"
+        else:
+            config = "world-0steps"
+    else:
+        config = "baseline"
+
+    # Add sample limit if specified
+    sample_suffix = f"_{max_samples}samples" if max_samples > 0 else ""
+
+    return f"outputs/spatial_bench/{model_slug}_{config}{sample_suffix}.jsonl"
 
 
 def parse_args():
@@ -64,8 +93,8 @@ def parse_args():
     p.add_argument(
         "--output",
         type=str,
-        default="outputs/spatial_rgpt_results.jsonl",
-        help="Output path for results",
+        default=None,
+        help="Output path for results (default: auto-generated based on model and config)",
     )
     p.add_argument(
         "--max-samples",
@@ -212,10 +241,12 @@ def run_eval(
     # Load model
     mode_str = "TheWorld" if load_cosmos else "Gemma-only baseline"
     print(f"Loading model ({mode_str}): {model_name}")
-    model = TheWorld(
-        gemma_model_name=model_name,
-        device=device,
-        load_cosmos=load_cosmos,
+
+    model = TheWorld.from_pretrained(
+        model_name,
+        enable_world=load_cosmos,
+        dtype=torch.bfloat16,
+        device_map="auto" if device == "cuda" else device,
     )
     model.eval()
     print(f"✓ Model loaded in evaluation mode")
@@ -248,53 +279,47 @@ def run_eval(
             # Collect batch data
             batch_examples = [ds[i] for i in batch_indices]
             batch_images = [ex["image"] for ex in batch_examples]
-            batch_questions = [ex["question"] for ex in batch_examples]
-            batch_ground_truths = [ex["answer"] for ex in batch_examples]
+            # Extract question from messages (first message is always user question)
+            batch_questions = [ex["messages"][0]["content"] for ex in batch_examples]
+            # Extract ground truth answer (second message if exists)
+            batch_ground_truths = [
+                ex["messages"][1]["content"] if len(ex["messages"]) > 1 else ""
+                for ex in batch_examples
+            ]
 
-            # Generate answers (batched if batch_size > 1)
+            # Generate answers using standard HuggingFace approach
             try:
-                if batch_size == 1:
-                    # Single sample - return string
-                    if load_cosmos:
-                        batch_predictions = [
-                            model.generate(
-                                image=batch_images[0],
-                                prompt=batch_questions[0],
-                                max_new_tokens=max_new_tokens,
-                                temperature=temperature,
-                                skip_world_tokens=False,
-                                num_world_steps=num_world_steps,
-                            )
-                        ]
-                    else:
-                        batch_predictions = [
-                            model.generate(
-                                image=batch_images[0],
-                                prompt=batch_questions[0],
-                                max_new_tokens=max_new_tokens,
-                                temperature=temperature,
-                                skip_world_tokens=True,
-                            )
-                        ]
-                else:
-                    # Batched processing - return list
-                    if load_cosmos:
-                        batch_predictions = model.generate(
-                            image=batch_images,
-                            prompt=batch_questions,
-                            max_new_tokens=max_new_tokens,
-                            temperature=temperature,
-                            skip_world_tokens=False,
-                            num_world_steps=num_world_steps,
-                        )
-                    else:
-                        batch_predictions = model.generate(
-                            image=batch_images,
-                            prompt=batch_questions,
-                            max_new_tokens=max_new_tokens,
-                            temperature=temperature,
-                            skip_world_tokens=True,
-                        )
+                # Prepare batch of messages
+                messages_batch = [
+                    [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "image", "image": img},
+                                {"type": "text", "text": question},
+                            ],
+                        }
+                    ]
+                    for img, question in zip(batch_images, batch_questions)
+                ]
+
+                # Process batch with processor (handles batching automatically)
+                inputs = model.processor.apply_chat_template(
+                    messages_batch, tokenize=True, return_dict=True, return_tensors="pt", padding=True
+                ).to(device)
+
+                # Generate (HuggingFace handles batching) - always use greedy decoding
+                input_length = inputs["input_ids"].shape[1]
+                with torch.no_grad():
+                    outputs = model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False)
+
+                # Decode only the newly generated tokens (skip input prompt)
+                batch_predictions = []
+                for output in outputs:
+                    generated_tokens = output[input_length:]
+                    response = model.processor.decode(generated_tokens, skip_special_tokens=True).strip()
+                    batch_predictions.append(response)
+
             except Exception as e:
                 # Error during generation
                 batch_predictions = [f"<ERROR: {e}>"] * len(batch_examples)
@@ -348,15 +373,15 @@ def run_eval(
                 ] * len(batch_examples)
 
             # Save results for this batch
-            for idx_in_batch, (ex, prediction, eval_result) in enumerate(
-                zip(batch_examples, batch_predictions, batch_eval_results)
+            for idx_in_batch, (ex, question, ground_truth, prediction, eval_result) in enumerate(
+                zip(batch_examples, batch_questions, batch_ground_truths, batch_predictions, batch_eval_results)
             ):
                 sample_idx = batch_start + idx_in_batch
 
                 result = {
                     "id": ex["id"],
-                    "question": ex["question"],
-                    "ground_truth": ex["answer"],
+                    "question": question,
+                    "ground_truth": ground_truth,
                     "prediction": prediction,
                     "qa_type": ex["qa_type"],
                     "qa_category": ex["qa_category"],
@@ -394,8 +419,8 @@ def run_eval(
                     with open(metadata_path, "w", encoding="utf-8") as mf:
                         metadata = {
                             "id": ex["id"],
-                            "question": ex["question"],
-                            "ground_truth": ex["answer"],
+                            "question": question,
+                            "ground_truth": ground_truth,
                             "prediction": prediction,
                             "qa_type": ex["qa_type"],
                             "qa_category": ex["qa_category"],
@@ -517,6 +542,17 @@ def main():
     """Main entry point."""
     args = parse_args()
 
+    # Generate output filename if not specified
+    output_path = args.output
+    if output_path is None:
+        output_path = generate_output_filename(
+            model_name=args.model,
+            load_cosmos=args.load_cosmos,
+            num_world_steps=args.num_world_steps,
+            max_samples=args.max_samples,
+        )
+        print(f"Auto-generated output path: {output_path}")
+
     # Determine judge mode from flags
     if args.official_judge:
         judge_mode = "official"
@@ -530,7 +566,7 @@ def main():
         image_folder=args.image_folder,
         model_name=args.model,
         device=args.device,
-        output_path=args.output,
+        output_path=output_path,
         max_samples=args.max_samples,
         load_cosmos=args.load_cosmos,
         num_world_steps=args.num_world_steps,

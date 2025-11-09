@@ -40,13 +40,6 @@ uv sync --dev
 - **Simple**: `uv run` automatically manages virtual environments
 - **Modern**: Built in Rust, handles dependency resolution efficiently
 
-**Alternative (without uv):**
-If you prefer not to use `uv`, you can set `PYTHONPATH` manually:
-```bash
-export PYTHONPATH=python:$PYTHONPATH
-python scripts/eval_spatial_rgpt.py ...
-```
-
 ## Quick Start
 
 **Note:** All commands use `uv run` for dependency management. If you haven't set up `uv`, see the [Setup section](#setup) below.
@@ -54,17 +47,7 @@ python scripts/eval_spatial_rgpt.py ...
 ### 1. Run Evaluation (10 samples)
 
 ```bash
-# Using uv (recommended)
-uv run python scripts/eval_spatial_rgpt.py \
-    --data-path a8cheng/SpatialRGPT-Bench \
-    --image-folder "" \
-    --model google/gemma-3-4b-it \
-    --output outputs/spatial_rgpt_baseline_10.jsonl \
-    --max-samples 10 \
-    --draw-bboxes
-
-# Or set PYTHONPATH manually
-PYTHONPATH=python:$PYTHONPATH python scripts/eval_spatial_rgpt.py \
+uv run python scripts/spatial/eval_spatial_rgpt.py \
     --data-path a8cheng/SpatialRGPT-Bench \
     --image-folder "" \
     --model google/gemma-3-4b-it \
@@ -110,7 +93,7 @@ By Category:
 
 ```bash
 # Evaluate all samples without batching (slow, ~2 hours)
-uv run python scripts/eval_spatial_rgpt.py \
+uv run python scripts/spatial/eval_spatial_rgpt.py \
     --data-path a8cheng/SpatialRGPT-Bench \
     --image-folder "" \
     --model google/gemma-3-4b-it \
@@ -126,7 +109,7 @@ uv run python scripts/eval_spatial_rgpt.py \
 
 ```bash
 # Use batching for ~30x speedup (RECOMMENDED)
-uv run python scripts/eval_spatial_rgpt.py \
+uv run python scripts/spatial/eval_spatial_rgpt.py \
     --data-path a8cheng/SpatialRGPT-Bench \
     --image-folder "" \
     --model google/gemma-3-4b-it \
@@ -189,7 +172,7 @@ uv run python scripts/eval_spatial_rgpt.py \
 Evaluates Gemma 3 without the world model:
 
 ```bash
-uv run python scripts/eval_spatial_rgpt.py \
+uv run python scripts/spatial/eval_spatial_rgpt.py \
     --data-path a8cheng/SpatialRGPT-Bench \
     --image-folder "" \
     --model google/gemma-3-4b-it \
@@ -202,7 +185,7 @@ uv run python scripts/eval_spatial_rgpt.py \
 Evaluates TheWorld with temporal world model:
 
 ```bash
-uv run python scripts/eval_spatial_rgpt.py \
+uv run python scripts/spatial/eval_spatial_rgpt.py \
     --data-path a8cheng/SpatialRGPT-Bench \
     --image-folder "" \
     --model username/theworld-model \
@@ -217,7 +200,7 @@ uv run python scripts/eval_spatial_rgpt.py \
 Evaluate on a local dataset file:
 
 ```bash
-uv run python scripts/eval_spatial_rgpt.py \
+uv run python scripts/spatial/eval_spatial_rgpt.py \
     --data-path /path/to/val_SpatialRGPT-Bench.jsonl \
     --image-folder /path/to/images \
     --model google/gemma-3-4b-it \
@@ -244,7 +227,7 @@ The evaluation automatically draws bounding boxes on images to help the model un
 
 To disable this feature:
 ```bash
-python scripts/eval_spatial_rgpt.py \
+python scripts/spatial/eval_spatial_rgpt.py \
     --data-path a8cheng/SpatialRGPT-Bench \
     --no-draw-bboxes  # Disable bounding box overlay
     ...
@@ -302,6 +285,29 @@ Prediction must contain ground truth information
 - Gemma less accurate than GPT-4 at unit conversion
 - May produce formatting artifacts
 - Use GPT-4 judge for publication-quality results (see Standalone Judging below)
+
+### Implementation Details: Paper Compliance
+
+Our implementation **exactly matches** the official SpatialRGPT-Bench evaluation methodology from the paper (Tables 12 & 13):
+
+**Qualitative Evaluation (Table 12):**
+- System prompt asks for JSON output with 0 or 1
+- 1 = "response perfectly matches the answer"
+- 0 = "response is completely different from the answer"
+- Implementation: `python/theworld/evaluation/judges.py:70-80` and `spatial_metrics.py:44-55`
+
+**Quantitative Evaluation (Table 13):**
+- System prompt asks judge to convert distances to meters
+- Conversion factors (exact match):
+  - 1 inch = 0.0254 meters ✓
+  - 1 foot = 0.3048 meters ✓
+  - 1 centimeter = 0.01 meters ✓
+- Judge outputs two floats: [ground_truth_meters, prediction_meters]
+- Relative error calculation: `|pred - gt| / gt`
+- Official threshold: ±25% (with additional ±10% and ±50% for analysis)
+- Implementation: `python/theworld/evaluation/judges.py:86-98` and `spatial_metrics.py:58-69`
+
+**Verification:** The `--official-judge` flag routes to these exact prompts, ensuring paper-compliant evaluation. Both Gemma (free) and GPT-4 (paid) judges use identical prompt templates.
 
 ## Understanding the Results
 
@@ -443,7 +449,7 @@ After running evaluation with `--skip-judging`, you can re-judge predictions usi
 
 ```bash
 # First, run evaluation without judging
-python scripts/eval_spatial_rgpt.py \
+python scripts/spatial/eval_spatial_rgpt.py \
     --data-path a8cheng/SpatialRGPT-Bench \
     --image-folder "" \
     --model google/gemma-3-4b-it \
@@ -451,7 +457,7 @@ python scripts/eval_spatial_rgpt.py \
     --skip-judging
 
 # Then judge with Gemma
-python scripts/judge_predictions.py \
+python scripts/spatial/judge_predictions.py \
     --predictions outputs/predictions.jsonl \
     --judge gemma \
     --model google/gemma-3-4b-it \
@@ -465,7 +471,7 @@ python scripts/judge_predictions.py \
 export OPENAI_API_KEY=sk-...
 
 # Judge with GPT-4
-python scripts/judge_predictions.py \
+python scripts/spatial/judge_predictions.py \
     --predictions outputs/predictions.jsonl \
     --judge gpt4 \
     --gpt-model gpt-4-turbo \
@@ -476,7 +482,7 @@ python scripts/judge_predictions.py \
 
 ```bash
 # Judge with GPT-OSS (requires large GPU)
-python scripts/judge_predictions.py \
+python scripts/spatial/judge_predictions.py \
     --predictions outputs/predictions.jsonl \
     --judge gpt-oss \
     --gpt-oss-model openai/gpt-oss-120b \
@@ -495,7 +501,7 @@ python scripts/judge_predictions.py \
 
 For 8-bit quantization:
 ```bash
-python scripts/judge_predictions.py \
+python scripts/spatial/judge_predictions.py \
     --predictions outputs/predictions.jsonl \
     --judge gpt-oss \
     --gpt-oss-dtype int8 \
@@ -507,7 +513,7 @@ python scripts/judge_predictions.py \
 ### Quick Test (3 samples)
 
 ```bash
-python scripts/test_spatial_eval.py
+python scripts/spatial/test_spatial_eval.py
 ```
 
 This runs a quick 3-sample test to verify the pipeline works.
@@ -558,7 +564,7 @@ print(f"Accuracy: {metrics['accuracy']:.2%}")
 
 ```bash
 # Baseline (with batching)
-uv run python scripts/eval_spatial_rgpt.py \
+uv run python scripts/spatial/eval_spatial_rgpt.py \
     --data-path a8cheng/SpatialRGPT-Bench \
     --image-folder "" \
     --model google/gemma-3-4b-it \
@@ -567,7 +573,7 @@ uv run python scripts/eval_spatial_rgpt.py \
     --max-samples 100
 
 # TheWorld (with batching)
-uv run python scripts/eval_spatial_rgpt.py \
+uv run python scripts/spatial/eval_spatial_rgpt.py \
     --data-path a8cheng/SpatialRGPT-Bench \
     --image-folder "" \
     --model username/theworld-model \
@@ -688,4 +694,4 @@ If you use this evaluation in your research, please cite:
 For issues or questions:
 - Check the [main README](../../README.md)
 - Open an issue on GitHub
-- See examples in `examples/` and `scripts/test_spatial_eval.py`
+- See examples in `examples/` and `scripts/spatial/test_spatial_eval.py`

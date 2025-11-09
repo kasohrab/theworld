@@ -8,13 +8,6 @@ This script tests the complete pipeline:
 4. Evaluate with Gemma-as-judge
 """
 
-import sys
-from pathlib import Path
-
-# Add project root to path
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PROJECT_ROOT))
-
 from theworld import TheWorld
 from theworld.datasets.spatial_rgpt import SpatialRGPTDataset
 from theworld.evaluation import evaluate_with_gemma

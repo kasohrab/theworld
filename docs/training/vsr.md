@@ -128,7 +128,7 @@ python scripts/vsr/evaluate_vsr.py \
 After training, visualize how well the Cosmos world embeddings align with Gemma's embedding space:
 
 ```bash
-python scripts/visualize_projection_alignment.py \
+python scripts/visualize/visualize_projection_alignment.py \
     --model checkpoints/theworld-vsr/checkpoint-1500 \
     --dataset vsr \
     --num_samples 100 \

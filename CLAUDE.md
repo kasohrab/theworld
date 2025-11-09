@@ -273,6 +273,37 @@ The `__init__(config)` constructor only creates model structure and is called in
 
 See `docs/architecture/implementation-notes.md` for detailed explanation.
 
+### Custom World Tokens
+
+TheWorld adds two special tokens to mark where world model embeddings are inserted:
+
+**Token Implementation:**
+```python
+# python/theworld/modeling/theworld.py:240-251
+custom_tokens = ["<start_of_world>", "<end_of_world>"]
+num_added = model.processor.tokenizer.add_special_tokens(
+    {"additional_special_tokens": custom_tokens}
+)
+model.resize_token_embeddings(len(model.processor.tokenizer))
+
+# Token IDs (appended to vocabulary):
+# <start_of_world>: 262145 (original_vocab_size + 0)
+# <end_of_world>:   262146 (original_vocab_size + 1)
+```
+
+**Key Points:**
+- Uses HuggingFace's `add_special_tokens()` API (standard approach for multimodal models)
+- Tokens are appended to Gemma 3's vocabulary (262,145 → 262,147 tokens)
+- New token embeddings are randomly initialized and trained during fine-tuning
+- Gemma 3 has 99 reserved "unused" slots via Google's `gemma` package, but we use HuggingFace's API for ecosystem compatibility
+
+**Usage in sequences:**
+- Training: `"<start_of_world> <end_of_world>" + image + text`
+- Fusion: World embeddings (784 tokens from Cosmos) inserted between SOW and EOW markers
+- Loss: World token positions masked with -100 (only text tokens contribute to loss)
+
+See `docs/architecture/tokenization.md` for complete tokenization guide.
+
 ### Input Format Compatibility
 
 The model accepts three input formats (HuggingFace datasets compatible):
@@ -405,7 +436,17 @@ theworld/
 │   ├── simple_training.py             # Basic training demo (forward/backward)
 │   └── load_from_hub.py              # Load model from HuggingFace Hub
 ├── scripts/                            # Production scripts
-│   └── train_hf.py                    # HuggingFace Trainer-based training
+│   ├── train_hf.py                    # HuggingFace Trainer-based training
+│   ├── evaluate_blink.py              # BLINK benchmark evaluation
+│   ├── spatial/                       # SpatialRGPT-Bench evaluation
+│   │   ├── eval_spatial_rgpt.py       # Main evaluation script
+│   │   ├── judge_predictions.py       # Re-judge predictions with different judges
+│   │   ├── test_spatial_eval.py       # Quick test (3 samples)
+│   │   ├── download_spatial_json.py   # Download training data
+│   │   └── visualize_spatial_bboxes.py # Visualize dataset samples
+│   ├── openimages/                    # OpenImages download utilities
+│   ├── profile/                       # Profiling scripts
+│   └── visualize/                     # Visualization utilities
 ├── configs/                            # Training configurations
 │   ├── default.json                   # Default training config
 │   ├── smoke_test.json               # Smoke test (2 samples, ~3 min verification)
@@ -472,9 +513,7 @@ from theworld.constants import (
     PAD_TOKEN_ID,              # 0 - Padding token
     IMAGE_SOFT_TOKEN_ID,       # 262144 - Vision encoder placeholder
 
-    # Custom token slots and names
-    CUSTOM_TOKEN_SLOT_SOW,     # 0 - <start_of_world> slot
-    CUSTOM_TOKEN_SLOT_EOW,     # 1 - <end_of_world> slot
+    # Custom world token names
     CUSTOM_TOKEN_SOW,          # "<start_of_world>" string
     CUSTOM_TOKEN_EOW,          # "<end_of_world>" string
 
@@ -714,10 +753,10 @@ The guide covers:
 huggingface-cli download a8cheng/OpenSpatialDataset --repo-type dataset --local-dir data/openspatial
 
 # 2. Extract image IDs
-python scripts/download_openimages.py --output data/required_images.txt
+python scripts/openimages/download_openimages.py --output data/required_images.txt
 
 # 3. Download images (background)
-sbatch scripts/download_openimages.sbatch
+sbatch scripts/openimages/download_openimages.sbatch
 
 # 4. Train (can start immediately)
 export HF_TOKEN=hf_your_token_here
@@ -994,11 +1033,26 @@ python scripts/evaluate_blink.py \
   --model username/theworld-datacomp \
   --num_world_steps 0,4
 
-# Interactive demo
-python scripts/inference_demo.py \
+# TheWorld on SpatialRGPT-Bench (with official judge)
+python scripts/spatial/eval_spatial_rgpt.py \
   --model username/theworld-datacomp \
-  --task Relative_Depth
+  --official-judge \
+  --batch-size 64 \
+  --output results/spatial_bench.jsonl
+
+# Gemma baseline on SpatialRGPT-Bench
+python scripts/spatial/eval_spatial_rgpt.py \
+  --model google/gemma-3-4b-it \
+  --official-judge \
+  --batch-size 64 \
+  --output results/spatial_baseline.jsonl
 ```
+
+**SpatialRGPT-Bench Notes:**
+- Uses official paper evaluation (Tables 12 & 13)
+- Gemma-as-judge (free) or GPT-4 (paid, more accurate)
+- Batching provides ~30x speedup
+- See [SpatialRGPT-Bench Guide](docs/evaluation/benchmarks/spatial-rgpt.md) for details
 
 See [Evaluation Guide](docs/evaluation/overview.md) for:
 - Baseline comparisons (Gemma3, random projection, ablation)
