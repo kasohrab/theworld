@@ -4,6 +4,7 @@
 
   "model_name": "google/gemma-3-4b-it",
   "cosmos_model_name": "nvidia/Cosmos-Predict2-2B-Video2World",
+  "world_projection_mode": "spatial",
   "num_world_steps": 0,
   "max_world_steps": 16,
 

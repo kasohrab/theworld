@@ -373,6 +373,77 @@ Temporal embeddings are added to distinguish between timesteps t=0 (current), t=
 
 See `docs/archive/autoregressive_world_rollout.md` for architecture details.
 
+### Projection Modes: Spatial vs Channel (Experimental)
+
+TheWorld supports two different modes for converting Cosmos VAE latents to tokens for the language model:
+
+#### **Mode 1: Spatial (Default)**
+```python
+# Each spatial position becomes a token
+# (B, z_dim, H, W) → (B, H*W, z_dim) → project → (B, H*W, gemma_dim)
+# Example: (B, 16, 64, 64) → (B, 4096, 16) → (B, 4096, 2304)
+
+model = TheWorld.from_pretrained(
+    "google/gemma-3-4b-it",
+    enable_world=True,
+    world_projection_mode="spatial",  # Default
+)
+```
+
+**Characteristics:**
+- **Many tokens**: 4096 tokens for 512×512 input (64×64 latent grid)
+- **Spatial locality**: Each token represents one spatial position with z_dim features
+- **Fine-grained**: Preserves spatial structure and local relationships
+- **Slower**: More tokens = more attention computation (O(N²))
+
+#### **Mode 2: Channel (Experimental)**
+```python
+# Each channel becomes a token
+# (B, z_dim, H, W) → (B, z_dim, H*W) → project → (B, z_dim, gemma_dim)
+# Example: (B, 16, 64, 64) → (B, 16, 4096) → (B, 16, 2304)
+
+model = TheWorld.from_pretrained(
+    "google/gemma-3-4b-it",
+    enable_world=True,
+    world_projection_mode="channel",  # Experimental
+)
+```
+
+**Characteristics:**
+- **Few tokens**: Only z_dim tokens (typically 16) regardless of input resolution
+- **Global context**: Each token sees the entire spatial map for one latent channel
+- **Coarse-grained**: Loses explicit spatial structure, encodes global spatial statistics
+- **Faster**: 256× fewer tokens than spatial mode = much faster attention
+
+#### **Configuration**
+
+Set projection mode in training config or at initialization:
+
+```json
+{
+  "model_name": "google/gemma-3-4b-it",
+  "world_projection_mode": "spatial",  // or "channel"
+  "freeze_cosmos_vae": true
+}
+```
+
+#### **Trade-offs & Evaluation Status**
+
+⚠️ **Both modes are experimental** - neither has been fully evaluated yet.
+
+**Hypotheses to test:**
+- **Spatial mode** may be better for tasks requiring fine-grained spatial reasoning (e.g., object localization, spatial relationships)
+- **Channel mode** may be better for tasks requiring global scene understanding with faster training/inference
+- **Performance vs Speed**: Does channel mode's 256× speedup justify potential accuracy loss?
+
+**Next steps:**
+1. Train both modes on the same dataset (e.g., DataComp, SpatialRGPT)
+2. Evaluate on spatial reasoning benchmarks (BLINK, SpatialRGPT-Bench)
+3. Measure training speed and memory usage
+4. Compare accuracy vs efficiency trade-off
+
+See `python/theworld/modeling/spatial_reducer.py` for implementation details.
+
 ### Training Label Alignment
 
 During training, labels must align with the combined embedding sequence:
@@ -919,6 +990,61 @@ accelerate config
 ```bash
 # See HuggingFace Accelerate documentation for multi-node setup
 # https://huggingface.co/docs/accelerate/basic_tutorials/launch
+```
+
+### SLURM Training (HPC Clusters)
+
+For training on HPC clusters with SLURM, use the configurable `train_slurm.sh` launcher:
+
+**Basic usage (H100 with defaults):**
+```bash
+sbatch scripts/train_slurm.sh --gpu-type H100 configs/spatial_rgpt_training_channel.json
+```
+
+**Custom configuration:**
+```bash
+# H200 with 4 GPUs, longer time limit
+sbatch scripts/train_slurm.sh \
+  --gpu-type H200 \
+  --gpu-count 4 \
+  --time 8:00:00 \
+  configs/spatial_rgpt_training.json
+
+# H100 with custom accelerate config
+sbatch scripts/train_slurm.sh \
+  --gpu-type H100 \
+  --gpu-count 2 \
+  configs/my_config.json \
+  configs/accelerate/multi_gpu_fsdp.yaml
+```
+
+**Available options:**
+- `--gpu-type TYPE` - GPU type (H100, H200, A100, etc.) - **REQUIRED**
+- `--gpu-count N` - Number of GPUs (default: 2)
+- `--time HH:MM:SS` - Time limit (default: 4:00:00)
+- `--mem SIZE` - Memory allocation (default: 256G)
+- `--email ADDRESS` - Email for notifications (default: ksohrab3@gatech.edu)
+
+**Job naming:**
+Job names are auto-derived from config and GPU settings. Examples:
+- `configs/spatial_rgpt_training_channel.json` + H100×2 → `theworld-spatial_rgpt_training_channel-h100x2`
+- `configs/smoke_test.json` + H200×4 → `theworld-smoke_test-h200x4`
+
+**Features:**
+- Automatic checkpoint resume (finds latest checkpoint and resumes)
+- Pre-downloads SpatialRGPT dataset JSON
+- Auto-loads HF token from `~/.hf_token` if available
+- Displays training configuration summary
+- Comprehensive error checking and validation
+
+**HuggingFace Token Setup:**
+```bash
+# One-time setup (recommended)
+echo 'hf_your_token_here' > ~/.hf_token
+chmod 600 ~/.hf_token
+
+# Or set before job submission
+export HF_TOKEN=hf_your_token_here
 ```
 
 ### Memory Optimization Strategies

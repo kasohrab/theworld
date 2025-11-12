@@ -1,16 +1,177 @@
 #!/bin/bash
-#SBATCH -J gemma-spatial-training          # Job name
-#SBATCH -N1 --ntasks-per-node=1             # 1 task per node (Accelerate handles GPUs)
-#SBATCH --gres=gpu:H100:2                  # 2 H100 GPUs
-#SBATCH --cpus-per-gpu=4                   # 4 CPUs per GPU for data loading
-#SBATCH --mem=256G                         # total RAM
-#SBATCH -t 4:00:00                         # time limit
-#SBATCH -o logs/slurm-%j.out               # Output file with job ID
-#SBATCH --mail-type=BEGIN,END,FAIL         # Email notifications
-#SBATCH --mail-user=ksohrab3@gatech.edu    # Email address
+#
+# TheWorld Training - Configurable SLURM Launcher
+#
+# Usage:
+#   sbatch scripts/train_slurm.sh --gpu-type H100 --gpu-count 2 configs/my_config.json [configs/accelerate/multi_gpu_ddp.yaml]
+#
+# Arguments:
+#   --gpu-type TYPE      GPU type (H100, H200, A100, etc.) - REQUIRED
+#   --gpu-count N        Number of GPUs (default: 2)
+#   --time HH:MM:SS      Time limit (default: 4:00:00)
+#   --mem SIZE           Memory allocation (default: 256G)
+#   --email ADDRESS      Email for notifications (default: ksohrab3@gatech.edu)
+#   <config.json>        Training configuration file - REQUIRED
+#   [accelerate.yaml]    Accelerate config (optional, default: configs/accelerate/multi_gpu_ddp.yaml)
+#
+
+# Parse command-line arguments
+GPU_TYPE=""
+GPU_COUNT=2
+TIME_LIMIT="4:00:00"
+MEMORY="256G"
+EMAIL="ksohrab3@gatech.edu"
+CONFIG_FILE=""
+ACCELERATE_CONFIG=""
+
+# Parse named arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --gpu-type)
+            GPU_TYPE="$2"
+            shift 2
+            ;;
+        --gpu-count)
+            GPU_COUNT="$2"
+            shift 2
+            ;;
+        --time)
+            TIME_LIMIT="$2"
+            shift 2
+            ;;
+        --mem)
+            MEMORY="$2"
+            shift 2
+            ;;
+        --email)
+            EMAIL="$2"
+            shift 2
+            ;;
+        --help)
+            echo "Usage: sbatch scripts/train_slurm.sh --gpu-type H100 [OPTIONS] <config.json> [accelerate.yaml]"
+            echo ""
+            echo "Required Arguments:"
+            echo "  --gpu-type TYPE      GPU type (H100, H200, A100, etc.)"
+            echo "  <config.json>        Training configuration file"
+            echo ""
+            echo "Optional Arguments:"
+            echo "  --gpu-count N        Number of GPUs (default: 2)"
+            echo "  --time HH:MM:SS      Time limit (default: 4:00:00)"
+            echo "  --mem SIZE           Memory allocation (default: 256G)"
+            echo "  --email ADDRESS      Email for notifications (default: ksohrab3@gatech.edu)"
+            echo "  [accelerate.yaml]    Accelerate config (default: configs/accelerate/multi_gpu_ddp.yaml)"
+            echo ""
+            echo "Examples:"
+            echo "  # H100 with 2 GPUs (most common)"
+            echo "  sbatch scripts/train_slurm.sh --gpu-type H100 configs/spatial_rgpt_training_channel.json"
+            echo ""
+            echo "  # H200 with 4 GPUs, longer time"
+            echo "  sbatch scripts/train_slurm.sh --gpu-type H200 --gpu-count 4 --time 8:00:00 configs/spatial_rgpt_training.json"
+            echo ""
+            echo "  # Custom accelerate config"
+            echo "  sbatch scripts/train_slurm.sh --gpu-type H100 configs/my_config.json configs/accelerate/multi_gpu_fsdp.yaml"
+            exit 0
+            ;;
+        -*)
+            echo "ERROR: Unknown option: $1"
+            echo "Run with --help for usage information"
+            exit 1
+            ;;
+        *)
+            # Positional arguments
+            if [ -z "$CONFIG_FILE" ]; then
+                CONFIG_FILE="$1"
+            elif [ -z "$ACCELERATE_CONFIG" ]; then
+                ACCELERATE_CONFIG="$1"
+            else
+                echo "ERROR: Too many positional arguments: $1"
+                echo "Expected: <config.json> [accelerate.yaml]"
+                exit 1
+            fi
+            shift
+            ;;
+    esac
+done
+
+# Validate required arguments
+if [ -z "$GPU_TYPE" ]; then
+    echo "ERROR: --gpu-type is required"
+    echo "Run with --help for usage information"
+    exit 1
+fi
+
+if [ -z "$CONFIG_FILE" ]; then
+    echo "ERROR: config.json is required"
+    echo "Run with --help for usage information"
+    exit 1
+fi
+
+# Default accelerate config if not provided
+if [ -z "$ACCELERATE_CONFIG" ]; then
+    ACCELERATE_CONFIG="configs/accelerate/multi_gpu_ddp.yaml"
+fi
+
+# Validate config files exist
+if [ ! -f "$CONFIG_FILE" ]; then
+    echo "ERROR: Config file not found: $CONFIG_FILE"
+    exit 1
+fi
+
+if [ ! -f "$ACCELERATE_CONFIG" ]; then
+    echo "ERROR: Accelerate config not found: $ACCELERATE_CONFIG"
+    exit 1
+fi
+
+# Auto-derive job name from config file and GPU settings
+# Example: configs/spatial_rgpt_training_channel.json + H100x2 → theworld-spatial_rgpt_training_channel-h100x2
+CONFIG_BASENAME=$(basename "$CONFIG_FILE" .json)
+GPU_TYPE_LOWER=$(echo "$GPU_TYPE" | tr '[:upper:]' '[:lower:]')
+JOB_NAME="theworld-${CONFIG_BASENAME}-${GPU_TYPE_LOWER}x${GPU_COUNT}"
+
+# Display configuration summary
+echo "============================================================"
+echo "TheWorld Training - SLURM Job Submission"
+echo "============================================================"
+echo "Job Name: $JOB_NAME"
+echo "GPU Configuration: ${GPU_COUNT}x ${GPU_TYPE}"
+echo "Memory: $MEMORY"
+echo "Time Limit: $TIME_LIMIT"
+echo "Training Config: $CONFIG_FILE"
+echo "Accelerate Config: $ACCELERATE_CONFIG"
+echo "Email: $EMAIL"
+echo "============================================================"
+echo ""
+
+# Export config paths for the worker script
+export CONFIG_FILE
+export ACCELERATE_CONFIG
+
+# Submit job with dynamically generated SLURM parameters
+sbatch \
+    --job-name="$JOB_NAME" \
+    --nodes=1 \
+    --ntasks-per-node=1 \
+    --gres="gpu:${GPU_TYPE}:${GPU_COUNT}" \
+    --cpus-per-gpu=4 \
+    --mem="$MEMORY" \
+    --time="$TIME_LIMIT" \
+    --output="logs/slurm-%j.out" \
+    --mail-type=BEGIN,END,FAIL \
+    --mail-user="$EMAIL" \
+    --export=ALL \
+    <<'SBATCH_SCRIPT_EOF'
+#!/bin/bash
+
+# ============================================================
+# TheWorld Training - SLURM Worker Script
+# ============================================================
+# This script is dynamically generated by train_slurm.sh
+# All configuration is passed via environment variables
+# ============================================================
 
 echo "============================================================"
-echo "Gemma-Only Training on SpatialRGPT - SLURM Job ${SLURM_JOB_ID}"
+echo "TheWorld Training - SLURM Job ${SLURM_JOB_ID}"
+echo "Job Name: ${SLURM_JOB_NAME}"
 echo "Started at: $(date)"
 echo "============================================================"
 
@@ -69,9 +230,6 @@ if [ -z "$HF_TOKEN" ]; then
     echo "  Then before submitting job:"
     echo "    export HF_TOKEN=\$(cat ~/.hf_token)"
     echo ""
-    echo "  Or use: sbatch scripts/train_slurm_gemma_h100.sbatch <config.json> [accelerate_config.yaml]"
-    echo "          (script auto-loads token from ~/.hf_token)"
-    echo ""
 
     # Try to read from ~/.hf_token if it exists
     if [ -f "$HOME/.hf_token" ]; then
@@ -88,28 +246,7 @@ fi
 echo "============================================================"
 echo ""
 
-# Parse arguments
-if [ -z "$1" ]; then
-    echo "ERROR: No config file provided!"
-    echo "Usage: sbatch scripts/train_slurm_gemma_h100.sbatch <config.json> [accelerate_config.yaml]"
-    echo ""
-    echo "Arguments:"
-    echo "  config.json             - Training configuration (required)"
-    echo "  accelerate_config.yaml  - Accelerate config (optional, default: configs/accelerate/multi_gpu_ddp.yaml)"
-    exit 1
-fi
-
-CONFIG_FILE="$1"
-
-# Use provided accelerate config or default to DDP
-if [ -n "$2" ]; then
-    ACCELERATE_CONFIG="$2"
-else
-    ACCELERATE_CONFIG="configs/accelerate/multi_gpu_ddp.yaml"
-fi
-
 # Validate files exist
-echo ""
 echo "============================================================"
 echo "Configuration Validation"
 echo "============================================================"
@@ -144,29 +281,27 @@ python3 << 'EOF'
 import json
 import os
 
-config_file = '$CONFIG_FILE'
+config_file = os.environ['CONFIG_FILE']
 with open(config_file) as f:
     config = json.load(f)
 
 # Display key configuration items
 print(f"Model: {config.get('model_name', 'Not specified')}")
-print(f"Enable World Model: {config.get('enable_world', True)}")
 print(f"Cosmos Model: {config.get('cosmos_model_name', 'Not specified')}")
 print(f"Dataset: {config.get('dataset_name', 'Not specified')}")
 print(f"Batch Size: {config.get('batch_size', 'Not specified')}")
 print(f"Learning Rate: {config.get('learning_rate', 'Not specified')}")
 print(f"Num Epochs: {config.get('num_epochs', 'Not specified')}")
 print(f"Mixed Precision: {config.get('mixed_precision', 'Not specified')}")
-print(f"Gradient Checkpointing: {config.get('use_gradient_checkpointing', False)}")
 print(f"World Steps: {config.get('num_world_steps', 0)}")
+print(f"Projection Mode: {config.get('world_projection_mode', 'spatial')}")
 
 # Freezing configuration
 print(f"\nTrainable Components:")
 print(f"  Gemma Vision: {'TRAINABLE' if not config.get('freeze_gemma_vision', True) else 'frozen'}")
 print(f"  Gemma Language: {'TRAINABLE' if not config.get('freeze_gemma_language', True) else 'frozen'}")
 print(f"  Cosmos VAE: {'TRAINABLE' if not config.get('freeze_cosmos_vae', True) else 'frozen'}")
-if config.get('enable_world', True):
-    print(f"  Projection Layers: ALWAYS TRAINABLE")
+print(f"  Projection Layers: ALWAYS TRAINABLE")
 
 output_dir = config.get('output_dir', './checkpoints')
 print(f"\nOutput Directory: {output_dir}")
@@ -178,13 +313,23 @@ EOF
 
 OUTPUT_DIR=$(python3 -c "
 import json
-with open('$CONFIG_FILE') as f:
+import os
+with open(os.environ['CONFIG_FILE']) as f:
     config = json.load(f)
 print(config.get('output_dir', './checkpoints'))
 ")
 
 echo ""
 echo "============================================================"
+
+# Pre-download SpatialRGPT Dataset JSON (for multi-GPU training)
+echo ""
+echo "============================================================"
+echo "Pre-download SpatialRGPT Dataset JSON"
+echo "============================================================"
+python scripts/spatial/download_spatial_json.py --skip-if-exists
+echo "✓ Dataset JSON ready at /tmp/openspatial/result_10_depth_convs.json"
+echo ""
 
 # Find latest checkpoint if exists (automatically resume from most recent)
 RESUME_FROM=""
@@ -227,31 +372,11 @@ echo "GPU Information:"
 echo "============================================================"
 nvidia-smi
 
-# Set HuggingFace token if available
-if [ -z "$HF_TOKEN" ]; then
-    echo ""
-    echo "WARNING: HF_TOKEN not set. Hub uploads may fail."
-    echo "Set with: export HF_TOKEN=hf_your_token"
-fi
-
 # Set HuggingFace cache directory to use cached models
 # This prevents trying to download models on compute nodes
 export HF_HOME="$HOME/.cache/huggingface"
+echo ""
 echo "HF_HOME: $HF_HOME"
-
-# Enable NCCL debugging for distributed training diagnostics
-# export NCCL_DEBUG=INFO
-# export NCCL_DEBUG_SUBSYS=ALL
-# echo "NCCL debugging: enabled (NCCL_DEBUG=INFO)"
-
-# Pre-download SpatialRGPT Dataset JSON (for multi-GPU training)
-echo ""
-echo "============================================================"
-echo "Pre-download SpatialRGPT Dataset JSON"
-echo "============================================================"
-python scripts/spatial/download_spatial_json.py --skip-if-exists
-echo "✓ Dataset JSON ready at /tmp/openspatial/result_10_depth_convs.json"
-echo ""
 
 # Record training start time
 TRAIN_START=$(date +%s)
@@ -259,7 +384,7 @@ TRAIN_START=$(date +%s)
 # Run training with Accelerate
 echo ""
 echo "============================================================"
-echo "Starting Training (2x H100 GPUs - Gemma-only Full Fine-tuning)"
+echo "Starting Training (${SLURM_JOB_GPUS} GPUs)"
 echo "============================================================"
 echo "Start time: $(date)"
 
@@ -329,3 +454,4 @@ fi
 echo "============================================================"
 
 exit $EXIT_CODE
+SBATCH_SCRIPT_EOF

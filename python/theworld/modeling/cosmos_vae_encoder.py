@@ -1,4 +1,4 @@
-"""Cosmos VAE encoder module for TheWorld model."""
+"""Cosmos VAE encoder for latent space encoding."""
 
 import torch
 import torch.nn as nn
@@ -11,65 +11,52 @@ from torch import Tensor
 import torchvision.transforms.functional as TF
 
 
-class CosmosEncoder(nn.Module):
-    """Encode images using Cosmos VAE → projection to Gemma space.
+class CosmosVAEEncoder(nn.Module):
+    """Encodes images using Cosmos VAE into latent space.
 
-    This module encapsulates all Cosmos-related processing:
-    1. VAE encoding (single frame only)
-    2. Projection from 16-dim latent space to 2304-dim Gemma space
+    This module handles:
+    1. Image preprocessing (PIL/numpy → tensor, resize to 512×512)
+    2. VAE encoding via Cosmos
+    3. Returns deterministic latents (using .mode())
 
     Args:
-        cosmos_vae: AutoencoderKL instance (Cosmos VAE model)
-        cosmos_dim: Dimension of Cosmos latent space (default: 16)
-        gemma_dim: Dimension of Gemma embedding space (default: 2304)
-        device: Device to place parameters on
-        freeze_vae: Whether to freeze VAE weights (default: True)
+        cosmos_vae: Cosmos AutoencoderKL instance
+        device: Device to place computations on
+        freeze_vae: Whether to freeze VAE weights
 
-    Input shapes:
-        images: List[PIL.Image] - Raw PIL images (B images)
-
-    Output shape:
-        world_embeds: (B, num_tokens, 2304) where num_tokens = H × W (spatial dimensions from VAE)
+    Input: List[PIL.Image]
+    Output: (B, z_dim, H, W) latents where H=64, W=64 for 512×512 input
     """
 
     def __init__(
         self,
         cosmos_vae: AutoencoderKL,
-        cosmos_dim: int = 16,
-        gemma_dim: int = 2304,
         device: Optional[str] = None,
         freeze_vae: bool = True,
     ):
         super().__init__()
 
         # Auto-detect device if not provided
-        # Accelerate will handle proper device placement in distributed setups
         if device is None:
             device = "cuda" if torch.cuda.is_available() else "cpu"
 
         self.cosmos_vae = cosmos_vae
         self.device: str = device
-        self.cosmos_dim = cosmos_dim
         self.freeze_vae = freeze_vae
 
-        # Projection: 16-dim latent → 2304-dim Gemma embedding space
-        # 2-layer MLP
-        self.world_projection = nn.Sequential(
-            nn.Linear(cosmos_dim, gemma_dim, dtype=torch.bfloat16), 
-            nn.GELU(),
-            nn.Linear(gemma_dim, gemma_dim, dtype=torch.bfloat16),
-            nn.GELU())
-        self.world_projection.to(device)
+        # Get latent dimension from config
+        self.z_dim = getattr(self.cosmos_vae.config, "z_dim", 16)
 
     def forward(self, images: List[Image.Image]) -> Tensor:
-        """Encode images into world embeddings.
+        """Encode images to latent space.
 
         Args:
             images: List of PIL images (length B)
 
         Returns:
-            world_embeds: Tensor of shape (B, num_tokens, 2304)
-                         where num_tokens = H × W (spatial tokens from VAE)
+            Latents of shape (B, z_dim, H, W) where:
+                - z_dim is from cosmos_vae.config (typically 16)
+                - H, W are spatial dimensions (64, 64 for 512×512 input)
         """
         # Input validation
         assert isinstance(images, list), f"images must be List[PIL.Image], got {type(images)}"
@@ -120,30 +107,13 @@ class CosmosEncoder(nn.Module):
         latent_dist = encoder_output.latent_dist
         latents = latent_dist.mode()  # Deterministic: use mode, not mean or sample
 
-        # Shape: (B, 16, 1, H, W) - single frame latent
+        # Shape: (B, z_dim, 1, H, W) - single frame latent
         b, c, t, h, w = latents.shape
         assert b == batch_size, f"Batch size mismatch: expected {batch_size}, got {b}"
-        assert c == self.cosmos_dim, f"Latent dim mismatch: expected {self.cosmos_dim}, got {c}"
+        assert c == self.z_dim, f"Latent dim mismatch: expected {self.z_dim}, got {c}"
         assert t == 1, f"Time dimension should be 1, got {t}"
 
-        # Remove time dimension and permute to (B, H, W, C)
-        latents = latents.squeeze(2).permute(0, 2, 3, 1)
+        # Remove time dimension: (B, z_dim, H, W)
+        latents = latents.squeeze(2)
 
-        # Reshape to 2D for projection: (B, H*W, 16)
-        num_tokens = h * w
-        reshaped_latents = latents.reshape(b, num_tokens, c)
-        # Ensure bfloat16 dtype (safety check, should already be correct)
-        reshaped_latents = reshaped_latents.to(dtype=torch.bfloat16)
-
-        # Project to Gemma dimension: (B, H*W, 16) → (B, H*W, 2304)
-        projected_embeds = self.world_projection(reshaped_latents)
-
-        # Output validation
-        assert projected_embeds.dim() == 3, f"Expected 3D tensor, got {projected_embeds.dim()}D"
-        assert projected_embeds.size(0) == batch_size, f"Batch size mismatch in output"
-        assert projected_embeds.size(1) == num_tokens, f"Token count mismatch"
-        # For Sequential (2-layer MLP), get output dim from last Linear layer
-        expected_dim = self.world_projection[-2].out_features  # -2 because last is GELU
-        assert projected_embeds.size(2) == expected_dim, f"Projection dim mismatch"
-
-        return projected_embeds
+        return latents

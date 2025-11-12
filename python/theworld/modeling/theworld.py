@@ -9,7 +9,9 @@ from transformers.cache_utils import Cache
 from diffusers.pipelines.cosmos.pipeline_cosmos2_video2world import Cosmos2VideoToWorldPipeline
 from diffusers.models.autoencoders.autoencoder_kl import AutoencoderKL
 
-from .cosmos_encoder import CosmosEncoder
+from .cosmos_vae_encoder import CosmosVAEEncoder
+from .world_projector import WorldProjector
+from .spatial_reducer import WorldProjectionConfig
 from .fusion import EmbeddingFusion
 from ..constants import DEFAULT_COSMOS_MODEL, DEFAULT_GEMMA_MODEL
 from .config import TheWorldConfig
@@ -27,8 +29,8 @@ class TheWorld(Gemma3ForConditionalGeneration):
     processor: Optional[Any]  # AutoProcessor type not fully typed in transformers
     cosmos_pipe: Optional[Cosmos2VideoToWorldPipeline]
     cosmos_vae: Optional[AutoencoderKL]
-    cosmos_vae_encoder: Optional[nn.Module]
-    cosmos_encoder: Optional[CosmosEncoder]
+    cosmos_vae_encoder: Optional[CosmosVAEEncoder]
+    world_projector: Optional[WorldProjector]
     fusion: Optional[EmbeddingFusion]
     sow_token_id: Optional[int]
     eow_token_id: Optional[int]
@@ -52,7 +54,7 @@ class TheWorld(Gemma3ForConditionalGeneration):
         self.cosmos_pipe = None
         self.cosmos_vae = None
         self.cosmos_vae_encoder = None
-        self.cosmos_encoder = None
+        self.world_projector = None
         self.fusion = None
         self.sow_token_id = None
         self.eow_token_id = None
@@ -64,6 +66,7 @@ class TheWorld(Gemma3ForConditionalGeneration):
         *model_args: Any,
         enable_world: bool = True,
         cosmos_model_name: str = DEFAULT_COSMOS_MODEL,
+        world_projection_mode: str = "spatial",
         device: Optional[str] = None,
         freeze_gemma_vision: bool = True,
         freeze_gemma_language: bool = True,
@@ -80,6 +83,7 @@ class TheWorld(Gemma3ForConditionalGeneration):
             pretrained_model_name_or_path: HuggingFace model ID or path
             enable_world: If True, add Cosmos world model. If False, Gemma-only baseline
             cosmos_model_name: HuggingFace model ID for Cosmos world model
+            world_projection_mode: Projection mode for world tokens ("spatial" or "channel")
             device: Device to load Cosmos on ("cuda", "cpu", etc.)
             freeze_gemma_vision: If True, freeze Gemma's vision encoder (SigLIP)
             freeze_gemma_language: If True, freeze Gemma's language model
@@ -250,13 +254,20 @@ class TheWorld(Gemma3ForConditionalGeneration):
             model.eow_token_id = model.processor.tokenizer.convert_tokens_to_ids("<end_of_world>")
             print(f"✓ Custom token IDs: SOW={model.sow_token_id}, EOW={model.eow_token_id}")
 
-            # CosmosEncoder
-            model.cosmos_encoder = CosmosEncoder(
+            # Cosmos VAE Encoder (preprocessing + VAE encoding)
+            model.cosmos_vae_encoder = CosmosVAEEncoder(
                 cosmos_vae=model.cosmos_vae,
-                cosmos_dim=cosmos_img_dim,
-                gemma_dim=gemma_dim,
                 device=device,
                 freeze_vae=model.config.freeze_cosmos_vae,
+            )
+
+            # World Projector (reduction + projection)
+            projection_config = WorldProjectionConfig(mode=world_projection_mode)
+            model.world_projector = WorldProjector(
+                config=projection_config,
+                z_dim=cosmos_img_dim,
+                gemma_dim=gemma_dim,
+                device=device,
             )
 
             # EmbeddingFusion
@@ -451,8 +462,8 @@ class TheWorld(Gemma3ForConditionalGeneration):
                 print("✓ Cosmos VAE (encoder + decoder) trainable")
 
             # 4. Always keep projection layer trainable
-            if self.cosmos_encoder is not None:
-                for param in self.cosmos_encoder.world_projection.parameters():
+            if self.world_projector is not None:
+                for param in self.world_projector.parameters():
                     param.requires_grad = True
                 print("✓ World projection layer trainable")
 
@@ -714,7 +725,8 @@ class TheWorld(Gemma3ForConditionalGeneration):
         **lm_kwargs: Any,
     ):
         """Forward pass with world model augmentation."""
-        assert self.cosmos_encoder is not None, "Cosmos encoder must be loaded"
+        assert self.cosmos_vae_encoder is not None, "Cosmos VAE encoder must be loaded"
+        assert self.world_projector is not None, "World projector must be loaded"
         assert self.fusion is not None, "Fusion module must be loaded"
         assert input_ids is not None, "input_ids is required for world-augmented forward"
         assert pixel_values is not None, "pixel_values is required for world-augmented forward"
@@ -735,8 +747,9 @@ class TheWorld(Gemma3ForConditionalGeneration):
         special_image_mask = self.model.get_placeholder_mask(input_ids, inputs_embeds, image_features)  # type: ignore
         inputs_embeds = inputs_embeds.masked_scatter(special_image_mask, image_features)  # type: ignore[assignment]
 
-        # 3. Get world embeddings
-        world_embeds = self.cosmos_encoder(images=images)
+        # 3. Get world embeddings (two-step pipeline)
+        latents = self.cosmos_vae_encoder(images)       # (B, z_dim, H, W)
+        world_embeds = self.world_projector(latents)    # (B, num_tokens, gemma_dim)
 
         # 4. Fuse embeddings
         fusion_output = self.fusion(
