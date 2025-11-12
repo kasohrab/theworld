@@ -155,7 +155,7 @@ sbatch \
     --cpus-per-gpu=4 \
     --mem="$MEMORY" \
     --time="$TIME_LIMIT" \
-    --output="logs/slurm-%j.out" \
+    --output="logs/${JOB_NAME}-%j.out" \
     --mail-type=BEGIN,END,FAIL \
     --mail-user="$EMAIL" \
     --export=ALL \
