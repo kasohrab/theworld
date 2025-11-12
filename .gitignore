@@ -221,7 +221,8 @@ __marimo__/
 # Training checkpoints
 checkpoints/
 logs/
-outputs/
+outputs/*
+!outputs/spatial_bench/
 data/result_10_depth_convs.json
 data/images
 data/llava-cc3m
