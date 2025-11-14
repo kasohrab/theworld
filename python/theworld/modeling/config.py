@@ -10,6 +10,7 @@ class TheWorldConfig(Gemma3Config):
         gemma_model_name: Optional[str] = DEFAULT_GEMMA_MODEL,
         cosmos_model_name: str = DEFAULT_COSMOS_MODEL,
         enable_world: bool = True,
+        world_projection_mode: str = "spatial",
         freeze_gemma_vision: bool = True,
         freeze_gemma_language: bool = True,
         freeze_cosmos_vae: bool = True,
@@ -18,6 +19,7 @@ class TheWorldConfig(Gemma3Config):
         self.gemma_model_name = gemma_model_name
         self.cosmos_model_name = cosmos_model_name
         self.enable_world = enable_world
+        self.world_projection_mode = world_projection_mode
         self.freeze_gemma_vision = freeze_gemma_vision
         self.freeze_gemma_language = freeze_gemma_language
         self.freeze_cosmos_vae = freeze_cosmos_vae
