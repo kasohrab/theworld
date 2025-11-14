@@ -220,7 +220,7 @@ __marimo__/
 
 # Training checkpoints
 checkpoints/
-logs/
+/logs
 outputs/*
 !outputs/spatial_bench/
 data/result_10_depth_convs.json
