@@ -139,12 +139,23 @@ echo "Time Limit: $TIME_LIMIT"
 echo "Training Config: $CONFIG_FILE"
 echo "Accelerate Config: $ACCELERATE_CONFIG"
 echo "Email: $EMAIL"
+echo ""
+echo "Log Directory: $LOG_DIR"
+echo "Log Pattern: ${LOG_DIR}/${JOB_NAME}-<jobid>.out"
 echo "============================================================"
 echo ""
 
 # Export config paths for the worker script
 export CONFIG_FILE
 export ACCELERATE_CONFIG
+
+# Create log directory with date/hour organization
+# Format: logs/YYYY-MM-DD/HH/job-name-jobid.out
+# Example: logs/2025-11-15/11/theworld-spatial_rgpt_channel_training-h100x2-3574247.out
+LOG_DATE=$(date +%Y-%m-%d)
+LOG_HOUR=$(date +%H)
+LOG_DIR="logs/${LOG_DATE}/${LOG_HOUR}"
+mkdir -p "$LOG_DIR"
 
 # Submit job with dynamically generated SLURM parameters
 sbatch \
@@ -155,7 +166,7 @@ sbatch \
     --cpus-per-gpu=4 \
     --mem="$MEMORY" \
     --time="$TIME_LIMIT" \
-    --output="logs/${JOB_NAME}-%j.out" \
+    --output="${LOG_DIR}/${JOB_NAME}-%j.out" \
     --mail-type=BEGIN,END,FAIL \
     --mail-user="$EMAIL" \
     --export=ALL \
@@ -448,7 +459,7 @@ fi
 if [ $EXIT_CODE -ne 0 ]; then
     echo ""
     echo "⚠ Training failed! Check logs for details:"
-    echo "  Logs: logs/slurm-${SLURM_JOB_ID}.out"
+    echo "  This log: ${SLURM_SUBMIT_DIR}/logs/$(date +%Y-%m-%d)/$(date +%H)/${SLURM_JOB_NAME}-${SLURM_JOB_ID}.out"
 fi
 
 echo "============================================================"
