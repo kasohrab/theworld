@@ -20,7 +20,7 @@
   "use_gradient_checkpointing": false,
   "mixed_precision": "bf16",
 
-  "output_dir": "./checkpoints/theworld-spatial-channel",
+  "output_dir": "./checkpoints/theworld-spatial-channel-2",
   "save_steps": 1000,
   "save_total_limit": 3,
   "resume_from_checkpoint": null,
@@ -31,7 +31,7 @@
 
   "logging_steps": 50,
   "log_to_wandb": false,
-  "wandb_project": "theworld-spatial",
+  "wandb_project": "theworld-channel",
   "wandb_run_name": "channel-mode-16-tokens",
   "log_to_tensorboard": true,
 
@@ -53,7 +53,7 @@
 
   "hf_token": null,
   "push_to_hub": true,
-  "hub_model_id": "kasohrab/theworld-spatial-channel",
+  "hub_model_id": "kasohrab/theworld-spatial-channel-2",
   "hub_strategy": "every_save",
   "hub_private_repo": false
 }

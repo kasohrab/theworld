@@ -176,6 +176,7 @@ class TheWorld(Gemma3ForConditionalGeneration):
             gemma_config_dict.pop("gemma_model_name", None)
             gemma_config_dict.pop("cosmos_model_name", None)
             gemma_config_dict.pop("enable_world", None)
+            gemma_config_dict.pop("world_projection_mode", None)
             gemma_config_dict.pop("freeze_gemma_vision", None)
             gemma_config_dict.pop("freeze_gemma_language", None)
             gemma_config_dict.pop("freeze_cosmos_vae", None)
@@ -184,6 +185,7 @@ class TheWorld(Gemma3ForConditionalGeneration):
                 gemma_model_name=pretrained_model_name_or_path,
                 cosmos_model_name=cosmos_model_name,
                 enable_world=enable_world,
+                world_projection_mode=world_projection_mode,
                 freeze_gemma_vision=freeze_gemma_vision,
                 freeze_gemma_language=freeze_gemma_language,
                 freeze_cosmos_vae=freeze_cosmos_vae,
@@ -262,7 +264,7 @@ class TheWorld(Gemma3ForConditionalGeneration):
             )
 
             # World Projector (reduction + projection)
-            projection_config = WorldProjectionConfig(mode=world_projection_mode)
+            projection_config = WorldProjectionConfig(mode=model.config.world_projection_mode)
             model.world_projector = WorldProjector(
                 config=projection_config,
                 z_dim=cosmos_img_dim,

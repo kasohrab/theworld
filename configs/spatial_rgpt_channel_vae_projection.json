@@ -22,7 +22,7 @@
   "use_gradient_checkpointing": false,
   "mixed_precision": "bf16",
 
-  "output_dir": "./checkpoints/theworld-spatial-vae-projection",
+  "output_dir": "./checkpoints/theworld-spatial-channel-vae-projection-2",
   "save_steps": 1000,
   "save_total_limit": 3,
   "resume_from_checkpoint": null,
@@ -33,8 +33,8 @@
 
   "logging_steps": 50,
   "log_to_wandb": false,
-  "wandb_project": "theworld-spatial",
-  "wandb_run_name": "vae-projection",
+  "wandb_project": "theworld-channel",
+  "wandb_run_name": "vae-projection-channel",
   "log_to_tensorboard": true,
 
   "max_seq_length": 2048,
@@ -54,7 +54,7 @@
 
   "hf_token": null,
   "push_to_hub": true,
-  "hub_model_id": "kasohrab/theworld-spatial-vae-projection",
+  "hub_model_id": "kasohrab/theworld-channel-vae-projection-2",
   "hub_strategy": "every_save",
   "hub_private_repo": false
 }
