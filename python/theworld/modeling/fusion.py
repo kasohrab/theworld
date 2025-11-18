@@ -16,14 +16,14 @@ class EmbeddingFusion(nn.Module):
         eow_token_id: Token ID for <end_of_world> (EOW)
 
     Input shapes:
-        gemma_embeds: (B, seq_len, 2304) - From GemmaVisionEncoder
-        world_embeds: (B, num_world_tokens, 2304) - From CosmosEncoder
+        gemma_embeds: (B, seq_len, gemma_dim) - From Gemma model (Gemma 3 4B: 2560)
+        world_embeds: (B, num_world_tokens, gemma_dim) - From CosmosEncoder (Gemma 3 4B: 2560)
         input_ids: (B, seq_len) - For finding bracket positions
         attention_mask: (B, seq_len) - To update for world tokens
 
     Output:
         FusionOutput with:
-            combined_embeds: (B, combined_len, 2304)
+            combined_embeds: (B, combined_len, gemma_dim) - Gemma 3 4B: 2560
             combined_attention_mask: (B, combined_len)
         where combined_len = seq_len - 2 + num_world_tokens
     """
@@ -43,8 +43,9 @@ class EmbeddingFusion(nn.Module):
         """Fuse Gemma and world embeddings by inserting world tokens.
 
         Args:
-            gemma_embeds: Gemma vision+text embeddings (B, seq_len, 2304)
-            world_embeds: Cosmos world embeddings (B, num_world_tokens, 2304)
+            gemma_embeds: Gemma vision+text embeddings (B, seq_len, gemma_dim)
+            world_embeds: Cosmos world embeddings (B, num_world_tokens, gemma_dim)
+                        (Gemma 3 4B uses gemma_dim=2560)
             input_ids: Token IDs for finding brackets (B, seq_len)
             attention_mask: Attention mask (B, seq_len)
 

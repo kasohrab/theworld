@@ -21,7 +21,7 @@ class WorldProjector(nn.Module):
     Args:
         config: World projection configuration (spatial vs channel mode)
         z_dim: Cosmos latent dimension (from cosmos_vae.config.z_dim)
-        gemma_dim: Gemma embedding dimension (default: 2304)
+        gemma_dim: Gemma embedding dimension (Gemma 3 4B: 2560, default: 2304 for compatibility)
 
     Input: (B, z_dim, H, W) latents from CosmosVAEEncoder
     Output: (B, num_tokens, gemma_dim) projected embeddings where:
@@ -56,13 +56,56 @@ class WorldProjector(nn.Module):
             # Cosmos VAE has 8× spatial compression
             proj_input_dim = 64 * 64
 
-        # Create projection MLP (2-layer)
-        self.projection = nn.Sequential(
-            nn.Linear(proj_input_dim, gemma_dim, dtype=torch.bfloat16, device=device),
-            nn.GELU(),
-            nn.Linear(gemma_dim, gemma_dim, dtype=torch.bfloat16, device=device),
-            nn.GELU(),
+        # Create projection layer(s) based on architecture config
+        self.projection = self._build_projection(
+            input_dim=proj_input_dim,
+            output_dim=gemma_dim,
+            architecture=config.architecture,
+            device=device,
         )
+
+    def _build_projection(
+        self,
+        input_dim: int,
+        output_dim: int,
+        architecture: str,
+        device: str,
+    ) -> nn.Module:
+        """Build projection layer(s) based on architecture config.
+
+        Args:
+            input_dim: Input dimension (z_dim for spatial, H*W for channel)
+            output_dim: Output dimension (Gemma embedding dimension, Gemma 3 4B: 2560)
+            architecture: Architecture type ("mlp", "mlp_no_final_gelu", "linear")
+            device: Device to place layers on
+
+        Returns:
+            Projection module (nn.Sequential or nn.Linear)
+        """
+        if architecture == "mlp":
+            # Default: 2-layer MLP with GELU after both layers
+            # Backward compatible with existing checkpoints
+            return nn.Sequential(
+                nn.Linear(input_dim, output_dim, dtype=torch.bfloat16, device=device),
+                nn.GELU(),
+                nn.Linear(output_dim, output_dim, dtype=torch.bfloat16, device=device),
+                nn.GELU(),
+            )
+        elif architecture == "mlp_no_final_gelu":
+            # 2-layer MLP without final GELU activation
+            return nn.Sequential(
+                nn.Linear(input_dim, output_dim, dtype=torch.bfloat16, device=device),
+                nn.GELU(),
+                nn.Linear(output_dim, output_dim, dtype=torch.bfloat16, device=device),
+            )
+        elif architecture == "linear":
+            # Single linear layer (simplest projection)
+            return nn.Linear(input_dim, output_dim, dtype=torch.bfloat16, device=device)
+        else:
+            raise ValueError(
+                f"Invalid architecture '{architecture}'. "
+                "Choose 'mlp', 'mlp_no_final_gelu', or 'linear'."
+            )
 
     def forward(self, latents: Tensor) -> Tensor:
         """Project latents to Gemma embeddings.

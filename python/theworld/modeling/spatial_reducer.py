@@ -24,13 +24,26 @@ class WorldProjectionConfig:
                 (B, z_dim, H, W) → (B, z_dim, H*W)
                 Pros: Few tokens (e.g., 16), global spatial context
                 Cons: Loses spatial structure
+
+        architecture: Projection layer architecture
+            - "mlp": 2-layer MLP with GELU after both layers (default, backward compatible)
+                Linear(input→gemma_dim) → GELU → Linear(gemma_dim→gemma_dim) → GELU
+            - "mlp_no_final_gelu": 2-layer MLP without final GELU activation
+                Linear(input→gemma_dim) → GELU → Linear(gemma_dim→gemma_dim)
+            - "linear": Single linear layer (simplest)
+                Linear(input→gemma_dim)
+
+            Note: For Gemma 3 4B, gemma_dim=2560
     """
     mode: Literal["spatial", "channel"] = "spatial"
+    architecture: Literal["mlp", "mlp_no_final_gelu", "linear"] = "mlp"
 
     def validate(self):
         """Validate configuration."""
         if self.mode not in ["spatial", "channel"]:
             raise ValueError(f"Invalid mode '{self.mode}'. Choose 'spatial' or 'channel'.")
+        if self.architecture not in ["mlp", "mlp_no_final_gelu", "linear"]:
+            raise ValueError(f"Invalid architecture '{self.architecture}'. Choose 'mlp', 'mlp_no_final_gelu', or 'linear'.")
 
 
 class SpatialReducer(nn.Module):

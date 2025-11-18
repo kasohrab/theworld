@@ -67,6 +67,7 @@ class TheWorld(Gemma3ForConditionalGeneration):
         enable_world: bool = True,
         cosmos_model_name: str = DEFAULT_COSMOS_MODEL,
         world_projection_mode: str = "spatial",
+        projection_architecture: str = "mlp",
         device: Optional[str] = None,
         freeze_gemma_vision: bool = True,
         freeze_gemma_language: bool = True,
@@ -84,6 +85,7 @@ class TheWorld(Gemma3ForConditionalGeneration):
             enable_world: If True, add Cosmos world model. If False, Gemma-only baseline
             cosmos_model_name: HuggingFace model ID for Cosmos world model
             world_projection_mode: Projection mode for world tokens ("spatial" or "channel")
+            projection_architecture: Projection architecture ("mlp", "mlp_no_final_gelu", "linear")
             device: Device to load Cosmos on ("cuda", "cpu", etc.)
             freeze_gemma_vision: If True, freeze Gemma's vision encoder (SigLIP)
             freeze_gemma_language: If True, freeze Gemma's language model
@@ -177,6 +179,7 @@ class TheWorld(Gemma3ForConditionalGeneration):
             gemma_config_dict.pop("cosmos_model_name", None)
             gemma_config_dict.pop("enable_world", None)
             gemma_config_dict.pop("world_projection_mode", None)
+            gemma_config_dict.pop("projection_architecture", None)
             gemma_config_dict.pop("freeze_gemma_vision", None)
             gemma_config_dict.pop("freeze_gemma_language", None)
             gemma_config_dict.pop("freeze_cosmos_vae", None)
@@ -186,6 +189,7 @@ class TheWorld(Gemma3ForConditionalGeneration):
                 cosmos_model_name=cosmos_model_name,
                 enable_world=enable_world,
                 world_projection_mode=world_projection_mode,
+                projection_architecture=projection_architecture,
                 freeze_gemma_vision=freeze_gemma_vision,
                 freeze_gemma_language=freeze_gemma_language,
                 freeze_cosmos_vae=freeze_cosmos_vae,
@@ -264,7 +268,10 @@ class TheWorld(Gemma3ForConditionalGeneration):
             )
 
             # World Projector (reduction + projection)
-            projection_config = WorldProjectionConfig(mode=model.config.world_projection_mode)
+            projection_config = WorldProjectionConfig(
+                mode=model.config.world_projection_mode,
+                architecture=model.config.projection_architecture,
+            )
             model.world_projector = WorldProjector(
                 config=projection_config,
                 z_dim=cosmos_img_dim,
@@ -331,6 +338,7 @@ class TheWorld(Gemma3ForConditionalGeneration):
             enable_world=config.enable_world,
             cosmos_model_name=config.cosmos_model_name,
             world_projection_mode=config.world_projection_mode,
+            projection_architecture=getattr(config, "projection_architecture", "mlp"),
             freeze_gemma_vision=config.freeze_gemma_vision,
             freeze_gemma_language=config.freeze_gemma_language,
             freeze_cosmos_vae=config.freeze_cosmos_vae,

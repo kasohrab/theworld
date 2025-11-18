@@ -7,6 +7,7 @@
   "enable_world": true,
   "num_world_steps": 0,
   "world_projection_mode": "channel",
+  "projection_architecture": "mlp",
   "freeze_gemma_vision": true,
   "freeze_gemma_language": true,
   "freeze_cosmos_vae": false,

@@ -16,6 +16,7 @@ class TrainingConfig:
         model_name: HuggingFace model ID for Gemma 3
         enable_world: If True, load Cosmos world model; if False, train Gemma-only baseline
         world_projection_mode: Projection mode for world tokens ("spatial" or "channel")
+        projection_architecture: Projection layer architecture ("mlp", "mlp_no_final_gelu", "linear")
         num_world_steps: Number of future frames to predict (0 = current only)
         max_world_steps: Maximum frames for temporal embeddings
         freeze_gemma_vision: If True, freeze Gemma's SigLIP vision encoder
@@ -81,6 +82,7 @@ class TrainingConfig:
     cosmos_model_name: str = DEFAULT_COSMOS_MODEL
     enable_world: bool = True
     world_projection_mode: str = "spatial"  # "spatial" or "channel"
+    projection_architecture: str = "mlp"  # "mlp" (default), "mlp_no_final_gelu", "linear"
     num_world_steps: int = 0
     max_world_steps: int = 16
     freeze_gemma_vision: bool = True

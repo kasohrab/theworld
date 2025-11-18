@@ -444,6 +444,90 @@ Set projection mode in training config or at initialization:
 
 See `python/theworld/modeling/spatial_reducer.py` for implementation details.
 
+### Projection Architectures
+
+TheWorld supports three different architectures for the projection layers that map Cosmos latents to Gemma embeddings:
+
+#### **Architecture 1: MLP (Default)**
+```python
+# 2-layer MLP with GELU after both layers
+# Linear(input→2304) → GELU → Linear(2304→2304) → GELU
+
+model = TheWorld.from_pretrained(
+    "google/gemma-3-4b-it",
+    enable_world=True,
+    projection_architecture="mlp",  # Default
+)
+```
+
+**Characteristics:**
+- **Default architecture**: Backward compatible with all existing checkpoints
+- **Two linear layers**: First projects to Gemma dimension, second refines the representation
+- **Two GELU activations**: Non-linearity after each layer enables complex transformations
+- **Best for**: General-purpose training, standard use cases
+
+#### **Architecture 2: MLP without Final GELU**
+```python
+# 2-layer MLP without final activation
+# Linear(input→2304) → GELU → Linear(2304→2304)
+
+model = TheWorld.from_pretrained(
+    "google/gemma-3-4b-it",
+    enable_world=True,
+    projection_architecture="mlp_no_final_gelu",
+)
+```
+
+**Characteristics:**
+- **Linear output**: No non-linearity before embeddings enter Gemma
+- **Smoother gradients**: May help with training stability
+- **Experimental**: Test if final GELU is necessary for performance
+
+#### **Architecture 3: Linear (Simplest)**
+```python
+# Single linear layer
+# Linear(input→2304)
+
+model = TheWorld.from_pretrained(
+    "google/gemma-3-4b-it",
+    enable_world=True,
+    projection_architecture="linear",
+)
+```
+
+**Characteristics:**
+- **Minimal complexity**: Single linear transformation
+- **Fewest parameters**: ~50% fewer parameters than MLP
+- **Faster training**: Less computation per forward pass
+- **Best for**: Testing if complex projection is necessary, faster iteration
+
+#### **Configuration**
+
+Set projection architecture in training config or at initialization:
+
+```json
+{
+  "model_name": "google/gemma-3-4b-it",
+  "projection_architecture": "mlp",  // "mlp", "mlp_no_final_gelu", or "linear"
+  "world_projection_mode": "spatial"
+}
+```
+
+#### **When to Use Each Architecture**
+
+| Architecture | Use Case | Training Speed | Model Capacity |
+|--------------|----------|----------------|----------------|
+| `mlp` (default) | Standard training, existing checkpoints | Baseline | Highest |
+| `mlp_no_final_gelu` | Test effect of final activation | Same as MLP | Same as MLP |
+| `linear` | Rapid prototyping, minimal projection | ~2× faster | Lowest |
+
+**Backward Compatibility:**
+- Default is `"mlp"` to match all existing trained checkpoints
+- Old checkpoints without this field automatically use `"mlp"`
+- All three architectures can be switched during training (with reinitialized projection layers)
+
+See `python/theworld/modeling/world_projector.py:_build_projection()` for implementation.
+
 ### Training Label Alignment
 
 During training, labels must align with the combined embedding sequence:
