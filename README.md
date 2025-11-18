@@ -229,13 +229,10 @@ model = TheWorld.from_pretrained(
 
 ## Training
 
-```bash
-# Quick smoke test (2 samples, ~3 min)
-export HF_TOKEN=hf_your_token_here
-make smoke-test
+Sample training using the sbatch script:
 
-# Train on DataComp-Small
-python scripts/train_hf.py --config configs/datacomp_production.json
+```bash
+./scripts/train_slurm.sh --gpu-type H100 configs/spatial_rgpt_channel_training_all.json configs/accelerate/multi_gpu_ddp.yaml
 ```
 
 See [Training Guide](docs/training_infrastructure_design.md) for detailed instructions.
