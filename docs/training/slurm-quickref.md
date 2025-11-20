@@ -12,7 +12,7 @@ chmod 600 ~/.hf_token
 
 ```bash
 # Custom accelerate config (DDP), make sure gpu count matches
-sbatch scripts/train_slurm.sh \
+./scripts/train_slurm.sh \
   --gpu-type H100 \
   configs/my_config.json \
   configs/accelerate/multi_gpu_ddp.yaml
