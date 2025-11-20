@@ -6,7 +6,7 @@ re-running expensive inference.
 
 Usage:
     # Judge with Gemma
-    python scripts/spatial/judge_predictions.py \
+    python scripts/judge_predictions.py \
         --predictions outputs/predictions.jsonl \
         --judge gemma \
         --model google/gemma-3-4b-it \
@@ -14,13 +14,13 @@ Usage:
 
     # Judge with GPT-4
     export OPENAI_API_KEY=sk-...
-    python scripts/spatial/judge_predictions.py \
+    python scripts/judge_predictions.py \
         --predictions outputs/predictions.jsonl \
         --judge gpt4 \
         --output outputs/results_judged_gpt4.jsonl
 
     # Judge with GPT-OSS
-    python scripts/spatial/judge_predictions.py \
+    python scripts/judge_predictions.py \
         --predictions outputs/predictions.jsonl \
         --judge gpt-oss \
         --gpt-oss-model openai/gpt-oss-120b \
@@ -29,10 +29,15 @@ Usage:
 
 import argparse
 import json
-from typing import List, Dict, Any
+import sys
 from pathlib import Path
+from typing import List, Dict, Any
 
 from tqdm import tqdm
+
+# Add project root to path
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT))
 
 
 def load_predictions(path: str) -> List[Dict[str, Any]]:
@@ -259,22 +264,20 @@ def main():
         from theworld import TheWorld
         from theworld.evaluation import GemmaJudge
 
-        # Load Gemma (TheWorld wrapper, but world disabled)
-        model = TheWorld.from_pretrained(
-            args.model,
-            enable_world=False,
+        # Load model
+        model = TheWorld(
+            gemma_model_name=args.model,
             device=args.device,
+            load_cosmos=False,  # Don't need Cosmos for judging
         )
         model.eval()
-        print(f"✓ Loaded Gemma model on {args.device}")
+        print(f"✓ Model loaded on {args.device}")
 
-        # Pass model into GemmaJudge
         judge = GemmaJudge(
             model=model,
             max_new_tokens=args.max_tokens,
             temperature=args.temperature,
         )
-        print("✓ Gemma judge initialized")
 
     elif args.judge == "gpt4":
         print(f"Initializing GPT-4 judge: {args.gpt_model}")

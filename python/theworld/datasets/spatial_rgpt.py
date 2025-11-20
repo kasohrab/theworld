@@ -1,7 +1,7 @@
 """
-Spatial-RGPT dataset loader for both evaluation and training.
+Spatial-RGPT evaluation dataset loader.
 
-**Evaluation format (SpatialRGPT-Bench):**
+Supports local JSONL files or HuggingFace dataset ids. Each example should contain:
   - id: unique id
   - image_info: dict with 'file_path' (relative path from image_folder)
   - text_q: text-only question (without special tokens)
@@ -10,24 +10,16 @@ Spatial-RGPT dataset loader for both evaluation and training.
   - rle: optional RLE-encoded masks
   - qa_info: dict with 'type' (qualitative/quantitative) and 'category'
 
-**Training format (OpenSpatialDataset):**
-  - filename: image filename (without extension, e.g., "img_001")
-  - conversations: list of conversation turns with spatial reasoning QA
-  - (no bbox field - regions are referenced in text as "Region [0]", "Region [1]", etc.)
-
 This module provides a PyTorch/Dataset-compatible wrapper that:
-  - Supports both eval and training data formats
-  - Optionally draws bounding boxes on images for visual grounding (eval mode)
+  - Draws bounding boxes on images for visual grounding
   - Extracts ground truth from conversations field
-  - Compatible with TheWorld training pipeline
-  - Uses images-first approach: only loads samples for available images
+  - Handles both bbox and RLE mask formats
 """
 
 from typing import Optional, Dict, Any, List
 from pathlib import Path
 from io import BytesIO
 import time
-import re
 import requests
 from PIL import Image
 from torch.utils.data import Dataset as TorchDataset
@@ -51,28 +43,12 @@ def download_image(url: str, timeout: int = 5, max_retries: int = 3) -> Optional
 
 
 class SpatialRGPTDataset(TorchDataset):
-    """Dataset wrapper for Spatial-RGPT evaluation and training data.
-
-    **Images-First Approach:** Only loads samples for images that exist in image_folder.
-    Scans available images at initialization, then builds JSON index for those images only.
-
-    Supports two data formats:
-      1. **Evaluation (SpatialRGPT-Bench)**: Has bbox, text_q, image_info fields
-      2. **Training (OpenSpatialDataset)**: Has filename, conversations only
+    """Dataset wrapper for Spatial-RGPT eval data.
 
     Accepts either:
-      - a HuggingFace dataset object (map style or streaming)
-      - a list of dicts loaded from a JSON/JSONL file
-
-    Each item returned is a dict with keys:
-      - id: unique identifier
-      - image: PIL.Image (RGB)
-      - question: text question (string)
-      - answer: ground truth answer (string)
-      - choices: optional choices (usually None)
-      - qa_type: question type (qualitative/quantitative) for eval
-      - qa_category: category for eval
-      - metadata: full raw item dict
+      - a HuggingFace dataset object (map style or streaming), or
+      - a list of dicts loaded from a JSONL
+    Each item returned is a dict with keys: id, image (PIL.Image), question, choices (optional), answer (optional), metadata
     """
 
     def __init__(
@@ -84,14 +60,14 @@ class SpatialRGPTDataset(TorchDataset):
         image_folder: Optional[str] = None,
         draw_bboxes: bool = True,
     ):
-        """Initialize dataset with images-first approach.
+        """Initialize dataset.
 
         Args:
             data_source: HuggingFace dataset, path to JSONL, or list of dicts
-            num_samples: limit samples by available images (not JSON entries)
+            num_samples: limit samples (useful for testing)
             streaming: whether HF dataset is streaming
             image_key_candidates: preference list of image keys to look for
-            image_folder: Base folder for image paths (required for training data)
+            image_folder: Base folder for image paths (if images are relative paths)
             draw_bboxes: Whether to draw bounding boxes on images (default: True)
         """
         self.num_samples = num_samples
@@ -113,160 +89,34 @@ class SpatialRGPTDataset(TorchDataset):
             self._wrap_hf_or_list(data_source)
 
     def _load_from_jsonl(self, path: Path) -> None:
-        """Load dataset with images-first approach."""
-        import json
-        import ijson
-
-        # Check if file is JSONL by reading first few chars
-        with open(path, "r", encoding="utf-8") as f:
-            first_char = f.read(1)
-            f.seek(0)
-
-            if first_char == "[":
-                # JSON array format - use images-first approach
-                print(f"  Loading JSON array with images-first approach...")
-                self._load_json_array_images_first(path)
-            else:
-                # JSONL format (one JSON object per line) - parse line by line
-                print(f"  Loading JSONL format (streaming)...")
-                self._load_jsonl_images_first(path)
-                
-    def _load_json_array_images_first(self, path: Path) -> None:
-        """Load JSON array with images-first approach: scan images, filter JSON."""
-        import ijson
-
-        start_time = time.time()
-
-        # Step 1: Scan available images
-        if self.image_folder:
-            print(f"  Scanning image folder: {self.image_folder}")
-            scan_start = time.time()
-            available_images = set()
-            for ext in ["*.jpg", "*.jpeg", "*.png", "*.webp"]:
-                for img_path in self.image_folder.glob(ext):
-                    # Remove extension to match JSON "filename" field
-                    available_images.add(img_path.stem)
-            scan_time = time.time() - scan_start
-            print(f"  ✓ Found {len(available_images):,} images in {scan_time:.1f}s")
-        else:
-            # No image folder specified - load all samples
-            available_images = None
-
-        # Step 2: Parse JSON and keep only samples with available images
-        print(f"  Parsing JSON and filtering by available images...")
-        parse_start = time.time()
-        self.items = []
-        with open(path, "rb") as f:
-            parser = ijson.items(f, "item")
-            for entry in parser:
-                # Check if image is available
-                if available_images is not None:
-                    # Training format: "filename" field
-                    image_id = entry.get("filename")
-                    if image_id and image_id not in available_images:
-                        continue
-
-                # Add to items
-                self.items.append(entry)
-
-                # Stop if we have enough samples
-                if self.num_samples and len(self.items) >= self.num_samples:
-                    break
-
-        parse_time = time.time() - parse_start
-        total_time = time.time() - start_time
-        print(f"  ✓ Loaded {len(self.items):,} samples in {parse_time:.1f}s (total: {total_time:.1f}s)")
-
-    def _load_jsonl_images_first(self, path: Path) -> None:
-        """Load JSONL format with images-first filtering."""
         import json
 
-        start_time = time.time()
-
-        # Step 1: Scan available images (same as JSON array)
-        if self.image_folder:
-            print(f"  Scanning image folder: {self.image_folder}")
-            available_images = set()
-            for ext in ["*.jpg", "*.jpeg", "*.png", "*.webp"]:
-                for img_path in self.image_folder.glob(ext):
-                    available_images.add(img_path.stem)
-            print(f"  ✓ Found {len(available_images):,} images")
-        else:
-            available_images = None
-
-        # Step 2: Parse JSONL and filter
-        self.items = []
+        items = []
         with open(path, "r", encoding="utf-8") as f:
-            for line in f:
-                entry = json.loads(line)
-
-                # Check if image is available
-                if available_images is not None:
-                    image_id = entry.get("filename")
-                    if image_id and image_id not in available_images:
-                        continue
-
-                self.items.append(entry)
-
-                # Stop if we have enough samples
-                if self.num_samples and len(self.items) >= self.num_samples:
+            for i, line in enumerate(f):
+                if self.num_samples and i >= self.num_samples:
                     break
-
-        total_time = time.time() - start_time
-        print(f"  ✓ Loaded {len(self.items):,} samples in {total_time:.1f}s")
+                items.append(json.loads(line))
+        self.items = items
 
     def _wrap_hf_or_list(self, data_source) -> None:
-        """Wrap HuggingFace dataset or list with images-first filtering."""
-        start_time = time.time()
-
-        # Step 1: Scan available images if image_folder is specified
-        if self.image_folder:
-            print(f"  Scanning image folder: {self.image_folder}")
-            available_images = set()
-            for ext in ["*.jpg", "*.jpeg", "*.png", "*.webp"]:
-                for img_path in self.image_folder.glob(ext):
-                    available_images.add(img_path.stem)
-            print(f"  ✓ Found {len(available_images):,} images")
-        else:
-            available_images = None
-
-        # Step 2: Filter dataset by available images
-        self.items = []
+        # HuggingFace dataset: assume it supports __len__/__getitem__ or is an iterator for streaming
         try:
             length = len(data_source)  # type: ignore
-            print(f"  Filtering {length:,} samples by available images...")
-            for i in range(length):
-                entry = data_source[i]
-
-                # Check if image is available
-                if available_images is not None:
-                    image_id = entry.get("filename")
-                    if image_id and image_id not in available_images:
-                        continue
-
-                self.items.append(entry)
-
-                # Stop if we have enough samples
-                if self.num_samples and len(self.items) >= self.num_samples:
-                    break
+            if self.num_samples:
+                # take slice
+                self.items = [data_source[i] for i in range(min(length, self.num_samples))]
+            else:
+                self.items = [data_source[i] for i in range(length)]
         except Exception:
-            # Likely streaming/iterator or list-like
-            print(f"  Filtering streaming dataset by available images...")
-            for entry in data_source:
-                # Check if image is available
-                if available_images is not None:
-                    image_id = entry.get("filename")
-                    if image_id and image_id not in available_images:
-                        continue
-
-                self.items.append(entry)
-
-                # Stop if we have enough samples
-                if self.num_samples and len(self.items) >= self.num_samples:
+            # Likely streaming/iterator or list-like; convert to list up to num_samples
+            self.items = []
+            count = 0
+            for x in data_source:
+                self.items.append(x)
+                count += 1
+                if self.num_samples and count >= self.num_samples:
                     break
-
-        total_time = time.time() - start_time
-        print(f"  ✓ Loaded {len(self.items):,} samples in {total_time:.1f}s")
 
     def __len__(self) -> int:
         return len(self.items)
@@ -284,7 +134,6 @@ class SpatialRGPTDataset(TorchDataset):
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         import ast
 
-        # Get item from in-memory list
         raw = self.items[idx]
 
         # Load image
@@ -302,26 +151,7 @@ class SpatialRGPTDataset(TorchDataset):
                 except Exception:
                     pil_image = None
 
-        # Try filename field (training data format: OpenSpatialDataset)
-        elif "filename" in raw:
-            # Training data uses "filename" without extension
-            # e.g., "img_001" -> "img_001.jpg"
-            filename = raw["filename"]
-            # Try common image extensions
-            for ext in [".jpg", ".jpeg", ".png", ".webp"]:
-                if self.image_folder:
-                    full_path = self.image_folder / f"{filename}{ext}"
-                else:
-                    full_path = Path(f"{filename}{ext}")
-
-                try:
-                    if full_path.exists():
-                        pil_image = Image.open(full_path).convert("RGB")
-                        break
-                except Exception:
-                    continue
-
-        # Try image_info field (eval data format: SpatialRGPT-Bench)
+        # Otherwise try image_info (JSONL format)
         elif "image_info" in raw:
             image_info = raw["image_info"]
             # Parse if it's a string (HuggingFace serialization)
@@ -357,21 +187,8 @@ class SpatialRGPTDataset(TorchDataset):
                     except Exception:
                         pil_image = None
 
-        # Handle missing images - this should not happen with images-first approach
-        # but keep error handling for robustness
-        if pil_image is None:
-            filename = raw.get("filename", raw.get("id", idx))
-            raise FileNotFoundError(
-                f"Image not found for sample {filename}. "
-                f"This should not happen with images-first loading - please report this bug."
-            )
-
-        # Extract and deduplicate bboxes to build global region ID mapping
-        # This mapping ensures text "Region [N]" matches drawn bbox labels
-        bbox_to_global_region = {}
-        unique_bboxes = []
-
-        if "bbox" in raw:
+        # Draw bounding boxes if requested and available
+        if self.draw_bboxes and pil_image is not None and "bbox" in raw:
             bboxes = raw["bbox"]
             # Parse if it's a string (HuggingFace serialization)
             if isinstance(bboxes, str):
@@ -380,33 +197,20 @@ class SpatialRGPTDataset(TorchDataset):
                 except Exception:
                     bboxes = []
 
-            # Build mapping: bbox_index -> global_region_id
-            # Deduplication ensures same physical region gets same ID
-            for idx, bbox in enumerate(bboxes):
-                bbox_tuple = tuple(bbox)
-                # Check if this bbox already exists in unique list
-                if bbox_tuple not in [tuple(u) for u in unique_bboxes]:
-                    # New unique region
-                    region_id = len(unique_bboxes)
-                    unique_bboxes.append(bbox)
-                else:
-                    # Duplicate - find which region this matches
-                    region_id = [tuple(u) for u in unique_bboxes].index(bbox_tuple)
-                bbox_to_global_region[idx] = region_id
+            if bboxes and len(bboxes) > 0:
+                # Clamp bboxes to image boundaries
+                img_width, img_height = pil_image.size
+                clamped_bboxes = [clamp_bbox(bbox, img_width, img_height) for bbox in bboxes]
 
-        # Draw bounding boxes if requested and available
-        if self.draw_bboxes and pil_image is not None and unique_bboxes:
-            # Clamp bboxes to image boundaries
-            img_width, img_height = pil_image.size
-            clamped_bboxes = [clamp_bbox(bbox, img_width, img_height) for bbox in unique_bboxes]
+                # Draw boxes with labels
+                labels = [f"Region [{i}]" for i in range(len(bboxes))]
+                pil_image = draw_bounding_boxes(pil_image, clamped_bboxes, labels=labels)
 
-            # Draw boxes with GLOBAL labels (matches text references)
-            labels = [f"Region [{i}]" for i in range(len(unique_bboxes))]
-            pil_image = draw_bounding_boxes(pil_image, clamped_bboxes, labels=labels)
+        # Extract question (prefer text_q for SpatialRGPT-Bench)
+        question = raw.get("text_q") or raw.get("question") or raw.get("prompt") or ""
 
-        # Parse conversations field (training data format: result_10_depth_convs.json)
-        messages = None
-
+        # Extract ground truth answer from conversations field
+        answer = None
         if "conversations" in raw:
             conversations = raw["conversations"]
             # Parse if it's a string (HuggingFace serialization)
@@ -416,131 +220,11 @@ class SpatialRGPTDataset(TorchDataset):
                 except Exception:
                     conversations = []
 
-            # Extract ALL conversation turns (not just first Q&A pair)
-            if isinstance(conversations, list) and len(conversations) >= 2:
-                messages = []
-                # Track mask counter across ALL conversation turns
-                # (important: counter must persist across turns, not reset)
-                global_mask_counter = 0
-                # Track turn-local→global mapping for current turn (for assistant responses)
-                turn_local_to_global = {}
-
-                for i, conv in enumerate(conversations):
-                    role = "user" if conv.get("from") == "human" else "assistant"
-                    content = conv.get("value", "")
-
-                    # Remove <image> token from first message only
-                    if i == 0:
-                        content = content.replace("<image>\n", "").replace("<image>", "")
-
-                    if role == "user":
-                        # USER MESSAGE: Replace <mask> tokens with global Region IDs
-                        # Build turn-local→global mapping for this turn
-                        turn_local_to_global = {}
-                        turn_local_counter = 0
-
-                        # Replace <mask> <depth> first (most specific)
-                        while "<mask> <depth>" in content:
-                            if global_mask_counter in bbox_to_global_region:
-                                global_region_id = bbox_to_global_region[global_mask_counter]
-                                turn_local_to_global[turn_local_counter] = global_region_id
-                                content = content.replace("<mask> <depth>", f"Region [{global_region_id}]", 1)
-                            else:
-                                # Fallback to sequential if no bbox mapping (shouldn't happen)
-                                turn_local_to_global[turn_local_counter] = global_mask_counter
-                                content = content.replace("<mask> <depth>", f"Region [{global_mask_counter}]", 1)
-                            global_mask_counter += 1
-                            turn_local_counter += 1
-
-                        # Replace standalone <mask> (fallback)
-                        while "<mask>" in content:
-                            if global_mask_counter in bbox_to_global_region:
-                                global_region_id = bbox_to_global_region[global_mask_counter]
-                                turn_local_to_global[turn_local_counter] = global_region_id
-                                content = content.replace("<mask>", f"Region [{global_region_id}]", 1)
-                            else:
-                                # Fallback to sequential if no bbox mapping
-                                turn_local_to_global[turn_local_counter] = global_mask_counter
-                                content = content.replace("<mask>", f"Region [{global_mask_counter}]", 1)
-                            global_mask_counter += 1
-                            turn_local_counter += 1
-
-                        # Remove remaining <depth> tokens
-                        content = content.replace("<depth>", "").strip()
-
-                    else:
-                        # ASSISTANT MESSAGE: Replace turn-local Region [N] with global IDs
-                        # The original data has "Region [0]", "Region [1]", etc. (turn-local)
-                        # We need to convert these to global IDs using the mapping from the previous user turn
-
-                        def replace_region_id(match):
-                            turn_local_id = int(match.group(1))
-                            if turn_local_id in turn_local_to_global:
-                                global_id = turn_local_to_global[turn_local_id]
-                                return f"Region [{global_id}]"
-                            else:
-                                # Keep original if no mapping (shouldn't happen)
-                                return match.group(0)
-
-                        # Replace all "Region [N]" patterns with global IDs
-                        content = re.sub(r'Region \[(\d+)\]', replace_region_id, content)
-
-                    messages.append({"role": role, "content": content})
-
-        # Fallback to evaluation format fields (SpatialRGPT-Bench)
-        if not messages:
-            question = raw.get("text_q") or raw.get("question") or raw.get("prompt") or ""
+            if len(conversations) >= 2:
+                # Answer is at index 1 (second turn)
+                answer = conversations[1].get("value", "")
+        else:
             answer = raw.get("answer")
-            if question:
-                # Replace <mask> tokens with global Region IDs (eval format)
-                # Build turn-local→global mapping for this question
-                turn_local_to_global = {}
-                global_mask_counter = 0
-                turn_local_counter = 0
-
-                while "<mask> <depth>" in question:
-                    if global_mask_counter in bbox_to_global_region:
-                        global_region_id = bbox_to_global_region[global_mask_counter]
-                        turn_local_to_global[turn_local_counter] = global_region_id
-                        question = question.replace("<mask> <depth>", f"Region [{global_region_id}]", 1)
-                    else:
-                        turn_local_to_global[turn_local_counter] = global_mask_counter
-                        question = question.replace("<mask> <depth>", f"Region [{global_mask_counter}]", 1)
-                    global_mask_counter += 1
-                    turn_local_counter += 1
-
-                while "<mask>" in question:
-                    if global_mask_counter in bbox_to_global_region:
-                        global_region_id = bbox_to_global_region[global_mask_counter]
-                        turn_local_to_global[turn_local_counter] = global_region_id
-                        question = question.replace("<mask>", f"Region [{global_region_id}]", 1)
-                    else:
-                        turn_local_to_global[turn_local_counter] = global_mask_counter
-                        question = question.replace("<mask>", f"Region [{global_mask_counter}]", 1)
-                    global_mask_counter += 1
-                    turn_local_counter += 1
-
-                question = question.replace("<depth>", "").strip()
-
-                messages = [
-                    {"role": "user", "content": question},
-                ]
-
-                if answer:
-                    # Convert answer's turn-local Region [N] to global IDs
-
-                    def replace_region_id(match):
-                        turn_local_id = int(match.group(1))
-                        if turn_local_id in turn_local_to_global:
-                            global_id = turn_local_to_global[turn_local_id]
-                            return f"Region [{global_id}]"
-                        else:
-                            # Keep original if no mapping (shouldn't happen)
-                            return match.group(0)
-
-                    # Replace all "Region [N]" patterns with global IDs
-                    answer = re.sub(r'Region \[(\d+)\]', replace_region_id, answer)
-                    messages.append({"role": "assistant", "content": answer})
 
         # Extract question type and category from qa_info
         qa_type = None
@@ -561,70 +245,10 @@ class SpatialRGPTDataset(TorchDataset):
         return {
             "id": raw.get("id") or raw.get("example_id") or idx,
             "image": pil_image,
-            "messages": messages,  # Multi-turn conversations
+            "question": question,
             "choices": raw.get("choices"),  # Usually None for SpatialRGPT-Bench
+            "answer": answer,
             "qa_type": qa_type,
             "qa_category": qa_category,
             "metadata": raw,
         }
-
-
-def load_spatial_rgpt(
-    split: str = "train",
-    image_folder: str = None,
-    num_samples: Optional[int] = None,
-    draw_bboxes: bool = False,
-    hf_token: Optional[str] = None,
-) -> SpatialRGPTDataset:
-    """Load SpatialRGPT OpenSpatialDataset for TheWorld training.
-
-    Uses images-first approach: only loads samples for images that exist in image_folder.
-
-    Args:
-        split: Dataset split ("train" or "validation")
-        image_folder: Path to OpenImagesV7 directory (required for training data)
-        num_samples: Limit to N available samples (None = use all available)
-        draw_bboxes: Draw bounding boxes on images (False for training, True for visualization)
-        hf_token: HuggingFace API token (optional, dataset is public)
-
-    Returns:
-        SpatialRGPTDataset instance
-
-    Example:
-        >>> # Load training set
-        >>> dataset = load_spatial_rgpt(
-        ...     split="train",
-        ...     image_folder="data/openimages/train",
-        ...     num_samples=1000
-        ... )
-        >>>
-        >>> # Load validation set with bboxes
-        >>> dataset = load_spatial_rgpt(
-        ...     split="validation",
-        ...     image_folder="data/openimages/validation",
-        ...     draw_bboxes=True
-        ... )
-    """
-    from datasets import load_dataset as hf_load_dataset
-
-    print(f"Loading SpatialRGPT OpenSpatialDataset (split={split})...")
-
-    # Load HuggingFace dataset
-    hf_dataset = hf_load_dataset(
-        "a8cheng/OpenSpatialDataset",
-        split=split,
-        token=hf_token,
-    )
-
-    print(f"  Loaded {len(hf_dataset)} samples from HuggingFace")
-
-    # Wrap in SpatialRGPTDataset (will filter by available images)
-    dataset = SpatialRGPTDataset(
-        hf_dataset,
-        image_folder=image_folder,
-        draw_bboxes=draw_bboxes,
-        num_samples=num_samples,
-    )
-
-    print(f"✓ SpatialRGPT dataset ready ({len(dataset)} available samples)")
-    return dataset

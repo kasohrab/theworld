@@ -277,42 +277,78 @@ class GemmaJudge(BaseJudge):
 
         return results[0] if not is_batch else results
 
+    # def _generate_batch(self, prompts: List[str]) -> List[str]:
+    #     """Generate judge responses using text-only generation from Gemma."""
+    #     try:
+    #         # Use tokenizer only (avoid image processor)
+    #         tokenizer = self.model.processor.tokenizer
+
+    #         # Tokenize prompts (TEXT ONLY, no images)
+    #         inputs = tokenizer(
+    #             prompts,
+    #             return_tensors="pt",
+    #             padding=True,
+    #             truncation=True,
+    #         ).to(self.model.device)
+
+    #         # Generate responses
+    #         with torch.no_grad():
+    #             output_ids = self.model.generate(
+    #                 **inputs,
+    #                 max_new_tokens=self.max_new_tokens,
+    #                 do_sample=self.temperature > 0,
+    #                 temperature=self.temperature if self.temperature > 0 else None,
+    #                 pad_token_id=tokenizer.pad_token_id,
+    #                 eos_token_id=tokenizer.eos_token_id,
+    #             )
+
+    #         # Decode and remove the input prompt
+    #         input_len = inputs["input_ids"].shape[1]
+    #         responses = []
+    #         for i in range(output_ids.shape[0]):
+    #             generated = output_ids[i, input_len:]
+    #             text = tokenizer.decode(generated, skip_special_tokens=True)
+    #             responses.append(text.strip())
+
+    #         return responses
+
+    #     except Exception as e:
+    #         # Return error for every prompt in batch
+    #         return [f"<ERROR: {e}>"] * len(prompts)
     def _generate_batch(self, prompts: List[str]) -> List[str]:
-        """Generate judge responses for a batch of prompts."""
+        """Fast batched generation for Gemma judge."""
         try:
-            # Use Gemma directly for text-only generation
-            inputs = self.model.processor(
-                text=prompts,
+            tokenizer = self.model.processor.tokenizer
+
+            # Batch tokenize
+            inputs = tokenizer(
+                prompts,
                 return_tensors="pt",
                 padding=True,
-            )
-            inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
+                truncation=True,
+            ).to(self.model.device)
 
-            # Generate
+            # Fast greedy generation
             with torch.no_grad():
-                output_ids = self.model.gemma.generate(
+                output_ids = self.model.generate(
                     **inputs,
                     max_new_tokens=self.max_new_tokens,
-                    temperature=self.temperature if self.temperature > 0 else None,
-                    do_sample=self.temperature > 0,
-                    pad_token_id=self.model.processor.tokenizer.pad_token_id,
-                    eos_token_id=self.model.processor.tokenizer.eos_token_id,
+                    do_sample=False,
+                    use_cache=True,          # important for speed
+                    num_beams=1,
                 )
 
-            # Decode all responses (skip input prompts)
-            input_length = inputs["input_ids"].shape[1]
-            batch_size = output_ids.shape[0]
-
+            # Decode new tokens only
+            input_len = inputs["input_ids"].shape[1]
             responses = []
-            for i in range(batch_size):
-                generated_ids = output_ids[i, input_length:]
-                response = self.model.processor.decode(generated_ids, skip_special_tokens=True)
-                responses.append(response.strip())
+            for i in range(output_ids.size(0)):
+                gen = output_ids[i, input_len:]
+                text = tokenizer.decode(gen, skip_special_tokens=True).strip()
+                responses.append(text)
 
             return responses
 
         except Exception as e:
-            # If generation fails, return errors for all prompts
             return [f"<ERROR: {e}>"] * len(prompts)
 
 
