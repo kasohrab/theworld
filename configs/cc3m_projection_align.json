@@ -1,0 +1,56 @@
+{
+  "_comment": "Stage 1 - projection-only alignment on CC3M/LLaVA-pretrain. Keeps Gemma vision, Gemma language, and Cosmos VAE frozen to align projection layers with the VLM.",
+
+  "model_name": "google/gemma-3-4b-it",
+  "cosmos_model_name": "nvidia/Cosmos-Predict2-2B-Video2World",
+  "enable_world": true,
+  "num_world_steps": 0,
+  "freeze_gemma_vision": true,
+  "freeze_gemma_language": true,
+  "freeze_cosmos_vae": true,
+
+  "learning_rate": 0.00005,
+  "batch_size": 2,
+  "gradient_accumulation_steps": 1,
+  "num_epochs": 1,
+  "warmup_steps": 100,
+  "weight_decay": 0.01,
+  "max_grad_norm": 1.0,
+
+  "use_gradient_checkpointing": false,
+  "mixed_precision": "bf16",
+
+  "output_dir": "./checkpoints/theworld-cc3m-projection-align",
+  "save_steps": 1000,
+  "save_total_limit": 3,
+  "resume_from_checkpoint": null,
+
+  "eval_steps": 2000,
+  "eval_batch_size": 8,
+  "do_eval": false,
+
+  "logging_steps": 100,
+  "log_to_wandb": false,
+  "wandb_project": "theworld-cc3m",
+  "wandb_run_name": "projection-align",
+  "log_to_tensorboard": true,
+
+  "max_seq_length": 2048,
+  "num_workers": 4,
+  "dataset_name": "llava_pretrain",
+  "train_dataset_path": "liuhaotian/LLaVA-CC3M-Pretrain-595K",
+  "eval_dataset_path": null,
+  "num_samples": null,
+  "streaming": false,
+
+  "_dataset_instructions": "Uses the CC3M-based LLaVA-CC3M-Pretrain-595K subset. Set image_folder to where the extracted images.zip contents live.",
+
+  "image_folder": "data/llava-cc3m/images",
+  "draw_bboxes": false,
+
+  "hf_token": null,
+  "push_to_hub": false,
+  "hub_model_id": null,
+  "hub_strategy": "every_save",
+  "hub_private_repo": false
+}
