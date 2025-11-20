@@ -504,6 +504,7 @@ def main():
             enable_world=config.enable_world,
             cosmos_model_name=config.cosmos_model_name,
             world_projection_mode=config.world_projection_mode,
+            projection_architecture=config.projection_architecture,
             freeze_gemma_vision=config.freeze_gemma_vision,
             freeze_gemma_language=config.freeze_gemma_language,
             freeze_cosmos_vae=config.freeze_cosmos_vae,

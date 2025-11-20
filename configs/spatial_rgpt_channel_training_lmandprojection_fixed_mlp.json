@@ -6,9 +6,9 @@
   "num_world_steps": 0,
   "world_projection_mode": "channel",
   "projection_architecture": "mlp_no_final_gelu",
-  "freeze_gemma_vision": false,
+  "freeze_gemma_vision": true,
   "freeze_gemma_language": false,
-  "freeze_cosmos_vae": false,
+  "freeze_cosmos_vae": true,
 
   "learning_rate": 0.0001,
   "batch_size": 2,

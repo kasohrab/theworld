@@ -176,6 +176,34 @@ done
 - Place logically near related parameters
 - Add comment if value choices need explanation
 
+#### 3.2 Update Training Script (`scripts/train_hf.py`)
+
+**CRITICAL:** The parameter must be passed from TrainingConfig to `TheWorld.from_pretrained()` in the training script.
+
+**Location:** Around line 502-512 in the fresh initialization section.
+
+**Add parameter to the call:**
+```python
+model = TheWorld.from_pretrained(
+    config.model_name,
+    enable_world=config.enable_world,
+    cosmos_model_name=config.cosmos_model_name,
+    world_projection_mode=config.world_projection_mode,
+    my_parameter=config.my_parameter,  # ADD THIS LINE
+    freeze_gemma_vision=config.freeze_gemma_vision,
+    freeze_gemma_language=config.freeze_gemma_language,
+    freeze_cosmos_vae=config.freeze_cosmos_vae,
+    torch_dtype=torch.bfloat16 if config.mixed_precision == "bf16" else torch.float32,
+)
+```
+
+**Important:**
+- Parameter must come from `config.my_parameter` (the TrainingConfig instance)
+- Place logically with related parameters (model config parameters before freezing flags)
+- This connects the JSON config → TrainingConfig → model initialization chain
+
+**Common Mistake:** Forgetting this step means the config JSON value is ignored and the default from `TheWorld.from_pretrained()` is used instead!
+
 ### Phase 4: Documentation
 
 #### 4.1 Update CLAUDE.md
@@ -360,6 +388,7 @@ Here's a real example of adding the `projection_architecture` parameter:
 4. **Forgetting to pop() in from_pretrained()** → Conflicts with Gemma config
 5. **Not updating all JSON configs** → Inconsistent training behavior
 6. **No backward compatibility tests** → Breaking changes for existing users
+7. **Not passing parameter in training script** → Config JSON value ignored, defaults used instead
 
 ## Verification Checklist
 
@@ -369,6 +398,7 @@ Here's a real example of adding the `projection_architecture` parameter:
 - [ ] from_pretrained() pops parameter from gemma_config_dict
 - [ ] from_checkpoint() uses getattr() with default for backward compatibility
 - [ ] All JSON configs have the parameter
+- [ ] **Training script (scripts/train_hf.py) passes parameter to from_pretrained()**
 - [ ] CLAUDE.md documents the parameter
 - [ ] Tests verify default value works
 - [ ] Tests verify custom values work
