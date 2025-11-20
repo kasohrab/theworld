@@ -142,7 +142,7 @@ python downloader.py data/required_images.txt \
 
 ## Step 2: Train
 
-### Basic Training
+### Basic Training (Local/Interactive)
 
 ```bash
 # Set HuggingFace token (for model uploads)
@@ -155,6 +155,53 @@ python scripts/train_hf.py --config configs/spatial_rgpt_training.json
 uv run accelerate launch --config_file configs/accelerate/multi_gpu_ddp.yaml \
     scripts/train_hf.py --config configs/spatial_rgpt_training.json
 ```
+
+### SLURM Training (HPC Clusters)
+
+For training on SLURM-managed clusters (e.g., Georgia Tech ICE cluster):
+
+```bash
+# Set HuggingFace token (one-time setup)
+echo 'hf_your_token_here' > ~/.hf_token
+chmod 600 ~/.hf_token
+
+# Submit training job (H100 GPUs, 2 GPUs, 4 hour time limit)
+./scripts/train_slurm.sh --gpu-type H100 configs/spatial_rgpt_training.json
+
+# H200 with 4 GPUs and longer time limit
+./scripts/train_slurm.sh \
+  --gpu-type H200 \
+  --gpu-count 4 \
+  --time 8:00:00 \
+  configs/spatial_rgpt_training.json
+
+# With custom accelerate config (FSDP for large models)
+./scripts/train_slurm.sh \
+  --gpu-type H100 \
+  --gpu-count 2 \
+  configs/spatial_rgpt_training.json \
+  configs/accelerate/multi_gpu_fsdp.yaml
+```
+
+**Features:**
+- Automatic checkpoint resume (resubmit same command to continue)
+- Auto-generated job names (`theworld-spatial_rgpt_training-h100x2`)
+- Pre-downloads dataset JSON to avoid multi-process conflicts
+- Comprehensive error checking and logging
+
+**Monitor training:**
+```bash
+# Check job status
+squeue -u $USER
+
+# View live logs (check output for log path)
+tail -f logs/2025-11-19/11/theworld-spatial_rgpt_training-h100x2-*.out
+
+# Cancel job if needed
+scancel <job-id>
+```
+
+See [SLURM Training Guide](slurm-ice.md) for detailed documentation.
 
 ### What Happens During Training
 
@@ -191,6 +238,7 @@ uv run accelerate launch --config_file configs/accelerate/multi_gpu_ddp.yaml \
 
 You can start training before all images download!
 
+**Local/Interactive:**
 ```bash
 # Step 1: Start download (background)
 sbatch scripts/openimages/download_openimages.sbatch
@@ -208,6 +256,27 @@ python scripts/train_hf.py \
     --resume_from_checkpoint checkpoints/theworld-spatial-bbox/checkpoint-1000
 # Re-scans folder, picks up new images (e.g., 50K samples)
 ```
+
+**SLURM (recommended for long training):**
+```bash
+# Step 1: Start download (background)
+sbatch scripts/openimages/download_openimages.sbatch
+
+# Step 2: Wait for initial batch (e.g., 10K images)
+watch -n 60 'find data/openimages -name "*.jpg" | wc -l'
+
+# Step 3: Submit training job (trains on available images)
+sbatch scripts/train_slurm.sh --gpu-type H100 configs/spatial_rgpt_training.json
+
+# Step 4: More images downloaded? Just resubmit (auto-resumes!)
+sbatch scripts/train_slurm.sh --gpu-type H100 configs/spatial_rgpt_training.json
+# Automatically:
+# - Resumes from latest checkpoint
+# - Re-scans image folder
+# - Trains on newly available images
+```
+
+The SLURM script automatically handles checkpoint resumption and picks up new images each time you resubmit.
 
 ---
 

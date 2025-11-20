@@ -229,13 +229,19 @@ model = TheWorld.from_pretrained(
 
 ## Training
 
-Sample training using the sbatch script:
-
+**Local/Interactive:**
 ```bash
-./scripts/train_slurm.sh --gpu-type H100 configs/spatial_rgpt_channel_training_all.json configs/accelerate/multi_gpu_ddp.yaml
+# Multi-GPU with Accelerate
+accelerate launch --config_file configs/accelerate/multi_gpu_ddp.yaml \
+    scripts/train_hf.py --config configs/spatial_rgpt_training.json
 ```
 
-See [Training Guide](docs/training_infrastructure_design.md) for detailed instructions.
+**SLURM (HPC Clusters):**
+
+See detailed guides:
+- [SLURM Training Guide](docs/training/slurm-ice.md)
+- [SpatialRGPT Training Guide](docs/training/spatial-rgpt.md)
+- [Multi-GPU Training Guide](docs/training/distributed.md)
 
 ## Architecture
 

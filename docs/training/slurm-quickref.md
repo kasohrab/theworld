@@ -6,38 +6,38 @@
 # Store HF token (one-time)
 echo 'hf_your_token_here' > ~/.hf_token
 chmod 600 ~/.hf_token
-
-# Load token
-export HF_TOKEN=$(cat ~/.hf_token)
 ```
 
 ## Submit Jobs
 
 ```bash
-# Default (FSDP, 4 GPUs)
-sbatch scripts/train_slurm.sbatch configs/llava_pretrain_full.json
+# Custom accelerate config (DDP), make sure gpu count matches
+sbatch scripts/train_slurm.sh \
+  --gpu-type H100 \
+  configs/my_config.json \
+  configs/accelerate/multi_gpu_ddp.yaml
 
-# With DDP
-sbatch scripts/train_slurm.sbatch configs/llava_pretrain_full.json configs/accelerate/multi_gpu_ddp.yaml
-
-# Single GPU test
-sbatch scripts/train_slurm.sbatch configs/smoke_test.json configs/accelerate/single_gpu.yaml
-
-# Pass HF_TOKEN explicitly
-sbatch --export=HF_TOKEN=$(cat ~/.hf_token) scripts/train_slurm.sbatch configs/llava_pretrain_full.json
+# All options
+./scripts/train_slurm.sh \
+  --gpu-type H100 \
+  --gpu-count 2 \
+  --time 12:00:00 \
+  --mem 512G \
+  --email your-email@gatech.edu \
+  configs/my_config.json
 ```
 
 ## Monitor Jobs
 
 ```bash
 # Check status
-squeue -u ksohrab3
+squeue -u $USER
 
 # Job details
 pace-job-summary <job-id>
 
 # Live logs
-tail -f logs/slurm-<job-id>.out
+tail -f logs/2025-11-19/11/theworld-*-<job-id>.out
 
 # Cancel job
 scancel <job-id>
@@ -46,27 +46,23 @@ scancel <job-id>
 ## Resume Training
 
 ```bash
-# Just resubmit (auto-resumes from latest checkpoint)
-sbatch scripts/train_slurm.sbatch configs/llava_pretrain_full.json
-```
-
-## Job Chaining
-
-```bash
-# Submit second job after first completes
-JOB1=$(sbatch --parsable scripts/train_slurm.sbatch configs/llava_pretrain_full.json)
-sbatch --dependency=afterok:$JOB1 scripts/train_slurm.sbatch configs/vsr_training.json
+# Just resubmit same command (auto-resumes!)
+./scripts/train_slurm.sh --gpu-type H100 configs/spatial_rgpt_channel_training_all_fixed_mlp.json configs/accelerate/multi_gpu_ddp.yaml 
 ```
 
 ## Check Resources
 
 ```bash
-# GPU info on login node
+# GPU info
 nvidia-smi
 
-# Check partition availability
-pace-check-queue ice-gpu
+# Storage quota
+pace-quota
 
-# View job history
-sacct -u ksohrab3 -S 2025-01-01
+# Job history
+sacct -u $USER -S 2025-01-01
 ```
+
+---
+
+**See [SLURM Training Guide](slurm-ice.md) for detailed documentation.**

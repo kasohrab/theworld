@@ -1078,58 +1078,27 @@ accelerate config
 
 ### SLURM Training (HPC Clusters)
 
-For training on HPC clusters with SLURM, use the configurable `train_slurm.sh` launcher:
+For training on HPC clusters with SLURM:
 
-**Basic usage (H100 with defaults):**
 ```bash
-sbatch scripts/train_slurm.sh --gpu-type H100 configs/spatial_rgpt_training_channel.json
-```
+# One-time setup
+echo 'hf_your_token_here' > ~/.hf_token
+chmod 600 ~/.hf_token
 
-**Custom configuration:**
-```bash
-# H200 with 4 GPUs, longer time limit
+# Submit training job (H100, 2 GPUs, 4 hour default)
+sbatch scripts/train_slurm.sh --gpu-type H100 configs/spatial_rgpt_training.json
+
+# H200 with 4 GPUs, 8 hour limit
 sbatch scripts/train_slurm.sh \
   --gpu-type H200 \
   --gpu-count 4 \
   --time 8:00:00 \
   configs/spatial_rgpt_training.json
-
-# H100 with custom accelerate config
-sbatch scripts/train_slurm.sh \
-  --gpu-type H100 \
-  --gpu-count 2 \
-  configs/my_config.json \
-  configs/accelerate/multi_gpu_fsdp.yaml
 ```
 
-**Available options:**
-- `--gpu-type TYPE` - GPU type (H100, H200, A100, etc.) - **REQUIRED**
-- `--gpu-count N` - Number of GPUs (default: 2)
-- `--time HH:MM:SS` - Time limit (default: 4:00:00)
-- `--mem SIZE` - Memory allocation (default: 256G)
-- `--email ADDRESS` - Email for notifications (default: ksohrab3@gatech.edu)
+**Features:** Auto-resume from latest checkpoint, auto job naming, pre-downloads dataset JSON
 
-**Job naming:**
-Job names are auto-derived from config and GPU settings. Examples:
-- `configs/spatial_rgpt_training_channel.json` + H100×2 → `theworld-spatial_rgpt_training_channel-h100x2`
-- `configs/smoke_test.json` + H200×4 → `theworld-smoke_test-h200x4`
-
-**Features:**
-- Automatic checkpoint resume (finds latest checkpoint and resumes)
-- Pre-downloads SpatialRGPT dataset JSON
-- Auto-loads HF token from `~/.hf_token` if available
-- Displays training configuration summary
-- Comprehensive error checking and validation
-
-**HuggingFace Token Setup:**
-```bash
-# One-time setup (recommended)
-echo 'hf_your_token_here' > ~/.hf_token
-chmod 600 ~/.hf_token
-
-# Or set before job submission
-export HF_TOKEN=hf_your_token_here
-```
+**See [SLURM Training Guide](docs/training/slurm-ice.md) for detailed documentation and options.**
 
 ### Memory Optimization Strategies
 
