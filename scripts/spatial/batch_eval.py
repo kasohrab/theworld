@@ -55,6 +55,7 @@ def parse_args():
         help="Path to images folder (empty = from HF dataset)",
     )
     p.add_argument("--max-samples", type=int, default=0, help="Max samples per model (0=all)")
+    p.add_argument("--batch-size", type=int, default=32, help="Batch size for evaluation (default: 32)")
     p.add_argument("--dry-run", action="store_true", help="Print what would be run without executing")
     return p.parse_args()
 
@@ -112,6 +113,8 @@ def main():
             "--model",
             model_id,
             "--skip-judging",
+            "--batch-size",
+            str(args.batch_size),
             "--output",
             str(output_path),
         ]
