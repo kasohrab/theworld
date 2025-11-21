@@ -233,6 +233,45 @@ python scripts/spatial/eval_spatial_rgpt.py \
     ...
 ```
 
+### Visualizing Bounding Box Examples
+
+To verify that bounding boxes and prompts are being processed correctly, use the visualization script:
+
+```bash
+# Visualize both eval and training datasets (5 samples each)
+uv run python scripts/spatial/visualize_spatial_bboxes.py \
+    --dataset-type both \
+    --samples-per-dataset 5 \
+    --image-folder /path/to/openimages \
+    --output-dir outputs/bbox_verification
+
+# Eval dataset only (from HuggingFace, no local images needed)
+uv run python scripts/spatial/visualize_spatial_bboxes.py \
+    --dataset-type eval \
+    --num-samples 10 \
+    --output-dir outputs/bbox_verification
+```
+
+**Note:** For training data, first download the JSON:
+```bash
+uv run python scripts/spatial/download_spatial_json.py --skip-if-exists
+```
+
+**Output structure:**
+```
+outputs/bbox_verification/
+├── eval/
+│   └── sample_001/
+│       ├── image_with_bboxes.png  # Image with drawn regions
+│       ├── prompt.txt             # Question (e.g., "Is Region [0] smaller than Region [1]?")
+│       ├── answer.txt             # Ground truth answer
+│       ├── metadata.json          # Converted data (what training sees)
+│       └── original.json          # Raw data before conversion
+└── training/
+    └── sample_001/
+        └── ...
+```
+
 ## How Gemma-as-Judge Works
 
 We provide multiple judge modes for evaluation. The **official judge** mode replicates the SpatialRGPT-Bench paper's evaluation methodology using Gemma instead of GPT-4.
@@ -421,92 +460,77 @@ By Category:
 
 Low accuracy on certain categories (e.g., `behind_predicate`) indicates areas where world model understanding could help.
 
-## Standalone Judging
+## Batch Judging Flow
 
-After running evaluation with `--skip-judging`, you can re-judge predictions using different judges without re-running inference. This is useful for comparing judge accuracy or using more expensive judges like GPT-4.
+Re-judge predictions without re-running inference. Useful for comparing judge accuracy.
+
+### Flow Overview
+
+```
+batch_judge.py  →  judge_predictions.py  →  judges.py (BaseJudge)
+     ↓                    ↓                      ↓
+Scans predictions/   Loads JSONL,          Uses official prompts
+for unjudged models  routes by qa_type     (Tables 12 & 13)
+```
+
+### Quick Usage
+
+```bash
+# Batch judge all unjudged predictions
+python scripts/spatial/batch_judge.py --judge gpt-oss --batch-size 56
+
+# Judge single file manually
+python scripts/spatial/judge_predictions.py \
+    --predictions outputs/spatial_results/predictions/model.jsonl \
+    --judge gpt-oss --output outputs/judged/model/gpt-oss.jsonl
+```
+
+### Official Prompts (from SpatialRGPT Paper)
+
+All judges use identical prompts from `judges.py:_create_qualitative_prompt()` and `_create_quantitative_prompt()`.
+
+**Qualitative (Table 12):** Judge outputs `0` or `1`
+```
+Output a single integer (0 or 1):
+(1) = response perfectly matches the answer
+(0) = response is completely different
+```
+
+**Quantitative (Table 13):** Judge converts to meters, outputs two floats
+```
+1 inch = 0.0254m, 1 foot = 0.3048m, 1 cm = 0.01m
+Output two floats in meters (answer, response):
+```
+
+### Parsing Logic (`spatial_metrics.py`)
+
+| Type | Parser | Logic |
+|------|--------|-------|
+| Qualitative | `parse_official_qualitative_response()` | First `0` or `1` in response |
+| Quantitative | `parse_official_quantitative_response()` | First two floats via regex |
+
+**Quantitative correctness:** `|pred - gt| / gt ≤ 0.25` (official ±25% threshold)
+
+### Output Structure
+
+Each judged result in JSONL:
+```json
+{
+  "question": "...", "prediction": "...", "ground_truth": "...",
+  "qa_type": "qualitative|quantitative",
+  "correct": true, "score": 1.0,
+  "judge_response": "1",
+  "relative_error": 0.15, "gt_meters": 2.1, "pred_meters": 1.8  // quantitative only
+}
+```
 
 ### Available Judges
 
-**1. Gemma (Free, Fast, Less Accurate)**
-- Uses the same Gemma model for judging
-- No additional costs
-- Good for quick iterations
-- May have unit conversion errors on quantitative questions
-
-**2. GPT-4 (Paid, Accurate, API-based)**
-- Uses OpenAI GPT-4 API
-- Requires API key and credits
-- Most accurate for unit conversions
-- Official SpatialRGPT-Bench uses GPT-4
-
-**3. GPT-OSS (Free, Accurate, Large Model)**
-- Uses OpenAI's open-source GPT model (120B params)
-- No API costs
-- More accurate than Gemma for unit conversions
-- Requires large GPU (~120-240GB VRAM)
-
-### Judge with Gemma
-
-```bash
-# First, run evaluation without judging
-python scripts/spatial/eval_spatial_rgpt.py \
-    --data-path a8cheng/SpatialRGPT-Bench \
-    --image-folder "" \
-    --model google/gemma-3-4b-it \
-    --output outputs/predictions.jsonl \
-    --skip-judging
-
-# Then judge with Gemma
-python scripts/spatial/judge_predictions.py \
-    --predictions outputs/predictions.jsonl \
-    --judge gemma \
-    --model google/gemma-3-4b-it \
-    --output outputs/results_judged_gemma.jsonl
-```
-
-### Judge with GPT-4
-
-```bash
-# Set API key
-export OPENAI_API_KEY=sk-...
-
-# Judge with GPT-4
-python scripts/spatial/judge_predictions.py \
-    --predictions outputs/predictions.jsonl \
-    --judge gpt4 \
-    --gpt-model gpt-4-turbo \
-    --output outputs/results_judged_gpt4.jsonl
-```
-
-### Judge with GPT-OSS
-
-```bash
-# Judge with GPT-OSS (requires large GPU)
-python scripts/spatial/judge_predictions.py \
-    --predictions outputs/predictions.jsonl \
-    --judge gpt-oss \
-    --gpt-oss-model openai/gpt-oss-120b \
-    --output outputs/results_judged_gptoss.jsonl
-```
-
-**GPT-OSS Options:**
-- `--gpt-oss-model`: HuggingFace model ID (default: openai/gpt-oss-120b)
-- `--gpt-oss-device-map`: Device placement strategy (default: auto)
-- `--gpt-oss-dtype`: Torch dtype (default: auto)
-
-**Memory Requirements:**
-- Full precision (fp32): ~480GB VRAM
-- Half precision (fp16): ~240GB VRAM
-- 8-bit quantization (int8): ~120GB VRAM
-
-For 8-bit quantization:
-```bash
-python scripts/spatial/judge_predictions.py \
-    --predictions outputs/predictions.jsonl \
-    --judge gpt-oss \
-    --gpt-oss-dtype int8 \
-    --output outputs/results_judged_gptoss.jsonl
-```
+| Judge | Cost | Accuracy | Notes |
+|-------|------|----------|-------|
+| `gemma` | Free | Lower | Same model, may have unit conversion errors |
+| `gpt4` | Paid | Highest | Requires `OPENAI_API_KEY` |
+| `gpt-oss` | Free | High | Large GPU needed (~120GB+ VRAM) |
 
 ## Advanced Usage
 
