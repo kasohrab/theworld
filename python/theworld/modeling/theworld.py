@@ -72,7 +72,7 @@ class TheWorld(Gemma3ForConditionalGeneration):
         freeze_gemma_vision: bool = True,
         freeze_gemma_language: bool = True,
         freeze_cosmos_vae: bool = True,
-        **kwargs: Any
+        **kwargs: Any,
     ) -> "TheWorld":
         """
         Load TheWorld model from pretrained weights.
@@ -108,10 +108,7 @@ class TheWorld(Gemma3ForConditionalGeneration):
                 from accelerate import PartialState
 
                 state = PartialState()
-                using_fsdp = (
-                    hasattr(state, "distributed_type")
-                    and state.distributed_type.value == "FSDP"
-                )
+                using_fsdp = hasattr(state, "distributed_type") and state.distributed_type.value == "FSDP"
             except Exception:
                 # PartialState not available or not in distributed setup
                 pass
@@ -154,22 +151,17 @@ class TheWorld(Gemma3ForConditionalGeneration):
                 return cls.from_checkpoint(pretrained_model_name_or_path, device=device, **kwargs)
             else:
                 # Hub checkpoint
-                hf_token = kwargs.pop('token', None) or kwargs.pop('use_auth_token', None)
+                hf_token = kwargs.pop("token", None) or kwargs.pop("use_auth_token", None)
                 return cls.from_checkpoint_hub(
-                    repo_id=pretrained_model_name_or_path,
-                    device=device,
-                    hf_token=hf_token,
-                    **kwargs
+                    repo_id=pretrained_model_name_or_path, device=device, hf_token=hf_token, **kwargs
                 )
 
         else:
-            # Case A: Initializing new TheWorld from base Gemma
-            print(f"Initializing new TheWorld model from base: {pretrained_model_name_or_path}")
+            # Case A: Initializing TheWorld from base Gemma (fresh or as part of checkpoint loading)
+            print(f"Loading Gemma base: {pretrained_model_name_or_path}")
 
             # Load Gemma via parent's from_pretrained
-            model = super(TheWorld, cls).from_pretrained(
-                pretrained_model_name_or_path, *model_args, **kwargs
-            )
+            model = super(TheWorld, cls).from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
             print(f"✓ Gemma loaded (dtype: {next(model.parameters()).dtype})")
 
             # Create TheWorldConfig from Gemma config
@@ -193,7 +185,7 @@ class TheWorld(Gemma3ForConditionalGeneration):
                 freeze_gemma_vision=freeze_gemma_vision,
                 freeze_gemma_language=freeze_gemma_language,
                 freeze_cosmos_vae=freeze_cosmos_vae,
-                **gemma_config_dict
+                **gemma_config_dict,
             )
 
             model.config = the_world_config
@@ -214,7 +206,11 @@ class TheWorld(Gemma3ForConditionalGeneration):
             torch.cuda.empty_cache()
 
         # 3. Load processor (needed for tokenization)
-        base_model = model.config.gemma_model_name if hasattr(model.config, 'gemma_model_name') else pretrained_model_name_or_path
+        base_model = (
+            model.config.gemma_model_name
+            if hasattr(model.config, "gemma_model_name")
+            else pretrained_model_name_or_path
+        )
         model.processor = AutoProcessor.from_pretrained(
             base_model,
             local_files_only=False,
@@ -249,9 +245,7 @@ class TheWorld(Gemma3ForConditionalGeneration):
 
             # Add world tokens
             custom_tokens = ["<start_of_world>", "<end_of_world>"]
-            num_added = model.processor.tokenizer.add_special_tokens(
-                {"additional_special_tokens": custom_tokens}
-            )
+            num_added = model.processor.tokenizer.add_special_tokens({"additional_special_tokens": custom_tokens})
             if num_added > 0:
                 model.resize_token_embeddings(len(model.processor.tokenizer))
                 print(f"✓ Added {num_added} custom tokens to vocabulary")
@@ -296,12 +290,7 @@ class TheWorld(Gemma3ForConditionalGeneration):
         return model
 
     @classmethod
-    def from_checkpoint(
-        cls,
-        checkpoint_path: str,
-        device: Optional[str] = None,
-        **kwargs: Any
-    ) -> "TheWorld":
+    def from_checkpoint(cls, checkpoint_path: str, device: Optional[str] = None, **kwargs: Any) -> "TheWorld":
         """
         Load TheWorld from a local checkpoint directory.
 
@@ -331,7 +320,6 @@ class TheWorld(Gemma3ForConditionalGeneration):
         config = TheWorldConfig.from_pretrained(checkpoint_path)
 
         # Stage 1: Initialize from base models (gets all weights, no meta tensors)
-        print(f"Loading base model: {config.gemma_model_name}")
         model = cls.from_pretrained(
             config.gemma_model_name,
             device=device,
@@ -342,7 +330,7 @@ class TheWorld(Gemma3ForConditionalGeneration):
             freeze_gemma_vision=config.freeze_gemma_vision,
             freeze_gemma_language=config.freeze_gemma_language,
             freeze_cosmos_vae=config.freeze_cosmos_vae,
-            **kwargs
+            **kwargs,
         )
 
         # Stage 2: Load checkpoint weights
@@ -372,7 +360,7 @@ class TheWorld(Gemma3ForConditionalGeneration):
         checkpoint_name: Optional[str] = None,
         device: Optional[str] = None,
         hf_token: Optional[str] = None,
-        **kwargs: Any
+        **kwargs: Any,
     ) -> "TheWorld":
         """
         Load TheWorld from a HuggingFace Hub checkpoint.
@@ -508,9 +496,7 @@ class TheWorld(Gemma3ForConditionalGeneration):
 
         # Create new input_ids with space for SOW and EOW tokens
         # Structure: [BOS, SOW, EOW, ...rest...]
-        new_input_ids = torch.zeros(
-            (batch_size, seq_len + 2), dtype=input_ids.dtype, device=device
-        )
+        new_input_ids = torch.zeros((batch_size, seq_len + 2), dtype=input_ids.dtype, device=device)
 
         # Copy BOS token (position 0)
         new_input_ids[:, 0] = input_ids[:, 0]
@@ -524,9 +510,7 @@ class TheWorld(Gemma3ForConditionalGeneration):
 
         # Update attention mask if provided
         if attention_mask is not None:
-            new_attention_mask = torch.zeros(
-                (batch_size, seq_len + 2), dtype=attention_mask.dtype, device=device
-            )
+            new_attention_mask = torch.zeros((batch_size, seq_len + 2), dtype=attention_mask.dtype, device=device)
             # Copy attention for BOS
             new_attention_mask[:, 0] = attention_mask[:, 0]
             # Set attention for SOW and EOW
@@ -556,9 +540,7 @@ class TheWorld(Gemma3ForConditionalGeneration):
 
         return state
 
-    def load_state_dict(
-        self, state_dict: Dict[str, Any], strict: bool = False, assign: bool = False
-    ) -> Any:
+    def load_state_dict(self, state_dict: Dict[str, Any], strict: bool = False, assign: bool = False) -> Any:
         """Load trainable parameters from checkpoint.
 
         Frozen parameters are already loaded from HuggingFace during __init__.
@@ -578,9 +560,7 @@ class TheWorld(Gemma3ForConditionalGeneration):
 
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", message=".*missing keys.*", category=UserWarning)
-            warnings.filterwarnings(
-                "ignore", message=".*were not found in the checkpoint.*", category=FutureWarning
-            )
+            warnings.filterwarnings("ignore", message=".*were not found in the checkpoint.*", category=FutureWarning)
             return super().load_state_dict(state_dict, strict=False, assign=assign)
 
     def save_pretrained(
@@ -596,20 +576,18 @@ class TheWorld(Gemma3ForConditionalGeneration):
         only the trainable parameters to model.safetensors.
         """
         import os
+
         os.makedirs(save_directory, exist_ok=True)
 
         self.config.save_pretrained(save_directory)
 
         # Only save trainable parameters (those with requires_grad=True)
-        trainable_keys = {
-            name for name, param in self.named_parameters() if param.requires_grad
-        }
-        trainable_state_dict = {
-            k: v for k, v in self.state_dict().items() if k in trainable_keys
-        }
+        trainable_keys = {name for name, param in self.named_parameters() if param.requires_grad}
+        trainable_state_dict = {k: v for k, v in self.state_dict().items() if k in trainable_keys}
 
         if safe_serialization:
             from safetensors.torch import save_file
+
             save_path = os.path.join(save_directory, "model.safetensors")
             save_file(trainable_state_dict, save_path)
         else:
@@ -670,11 +648,7 @@ class TheWorld(Gemma3ForConditionalGeneration):
         # Route to world-augmented or pure Gemma path
         if self.config.enable_world and images is not None:
             # Inject world tokens if not present
-            if (
-                input_ids is not None
-                and self.sow_token_id is not None
-                and not (input_ids == self.sow_token_id).any()
-            ):
+            if input_ids is not None and self.sow_token_id is not None and not (input_ids == self.sow_token_id).any():
                 input_ids, attention_mask = self._inject_world_tokens(input_ids, attention_mask)
 
             # World-augmented path
@@ -759,8 +733,8 @@ class TheWorld(Gemma3ForConditionalGeneration):
         inputs_embeds = inputs_embeds.masked_scatter(special_image_mask, image_features)  # type: ignore[assignment]
 
         # 3. Get world embeddings (two-step pipeline)
-        latents = self.cosmos_vae_encoder(images)       # (B, z_dim, H, W)
-        world_embeds = self.world_projector(latents)    # (B, num_tokens, gemma_dim)
+        latents = self.cosmos_vae_encoder(images)  # (B, z_dim, H, W)
+        world_embeds = self.world_projector(latents)  # (B, num_tokens, gemma_dim)
 
         # 4. Fuse embeddings
         fusion_output = self.fusion(
@@ -880,9 +854,7 @@ class TheWorld(Gemma3ForConditionalGeneration):
                 attention_mask = torch.cat(
                     [
                         attention_mask[:, :1],
-                        torch.ones(
-                            (batch_size, 2), device=attention_mask.device, dtype=attention_mask.dtype
-                        ),
+                        torch.ones((batch_size, 2), device=attention_mask.device, dtype=attention_mask.dtype),
                         attention_mask[:, 1:],
                     ],
                     dim=1,
