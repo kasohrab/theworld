@@ -176,7 +176,9 @@ def process_dataset(dataset, output_dir, dataset_name, start_idx=0):
         # Save image with unique bboxes
         image_path = sample_dir / "image_with_bboxes.png"
         image_with_bboxes.save(image_path)
-        print(f"[{i+1}/{len(dataset)}] Saved: {image_path} ({len(unique_bboxes)} unique regions out of {len(raw_bboxes)} total bboxes)")
+        print(
+            f"[{i+1}/{len(dataset)}] Saved: {image_path} ({len(unique_bboxes)} unique regions out of {len(raw_bboxes)} total bboxes)"
+        )
 
         # Extract question and answer from messages
         messages = sample.get("messages", [])
@@ -329,9 +331,7 @@ def main():
             image_folder=args.image_folder if args.image_folder else None,
             split="train",
         )
-        process_dataset(
-            training_dataset, training_output_dir, "training", start_idx=args.start_idx
-        )
+        process_dataset(training_dataset, training_output_dir, "training", start_idx=args.start_idx)
 
     print()
     print("=" * 80)

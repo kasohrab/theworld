@@ -1,34 +1,33 @@
 """Judge spatial reasoning predictions using various judge models.
 
 This script takes predictions from eval_spatial_rgpt.py and judges them
-using either Gemma or GPT-4. This allows re-judging predictions without
+using Gemma, GPT-4, or GPT-OSS. This allows re-judging predictions without
 re-running expensive inference.
 
 Usage:
-    # Judge with Gemma
+    # Judge with Gemma (default model)
     python scripts/spatial/judge_predictions.py \
         --predictions outputs/predictions.jsonl \
         --judge gemma \
-        --model google/gemma-3-4b-it \
         --output outputs/results_judged_gemma.jsonl
 
-    # Judge with GPT-4
-    export OPENAI_API_KEY=sk-...
+    # Judge with GPT-4 (requires OPENAI_API_KEY env var)
     python scripts/spatial/judge_predictions.py \
         --predictions outputs/predictions.jsonl \
         --judge gpt4 \
         --output outputs/results_judged_gpt4.jsonl
 
-    # Judge with GPT-OSS
+    # Judge with GPT-OSS (custom model)
     python scripts/spatial/judge_predictions.py \
         --predictions outputs/predictions.jsonl \
         --judge gpt-oss \
-        --gpt-oss-model openai/gpt-oss-120b \
+        --judge-model openai/gpt-oss-20b \
         --output outputs/results_judged_gptoss.jsonl
 """
 
 import argparse
 import json
+from pathlib import Path
 from typing import List, Dict, Any
 
 from tqdm import tqdm
@@ -55,7 +54,6 @@ def parse_args():
     """Parse command line arguments."""
     p = argparse.ArgumentParser(description="Judge spatial reasoning predictions")
 
-    # Input/output
     p.add_argument(
         "--predictions",
         type=str,
@@ -68,8 +66,6 @@ def parse_args():
         required=True,
         help="Output path for judged results JSONL",
     )
-
-    # Judge selection
     p.add_argument(
         "--judge",
         type=str,
@@ -77,56 +73,12 @@ def parse_args():
         required=True,
         help="Judge model to use",
     )
-
-    # Gemma-specific args
     p.add_argument(
-        "--model",
-        type=str,
-        default="google/gemma-3-4b-it",
-        help="Gemma model to use (only for --judge gemma)",
-    )
-    p.add_argument(
-        "--device",
-        type=str,
-        default="cuda",
-        help="Device for Gemma (only for --judge gemma)",
-    )
-
-    # GPT-4 specific args
-    p.add_argument(
-        "--api-key",
+        "--judge-model",
         type=str,
         default=None,
-        help="OpenAI API key (or set OPENAI_API_KEY env var)",
+        help="Model ID (defaults: gemma=google/gemma-3-4b-it, gpt4=gpt-4, gpt-oss=openai/gpt-oss-120b)",
     )
-    p.add_argument(
-        "--gpt-model",
-        type=str,
-        default="gpt-4",
-        help="GPT model to use (only for --judge gpt4)",
-    )
-
-    # GPT-OSS specific args
-    p.add_argument(
-        "--gpt-oss-model",
-        type=str,
-        default="openai/gpt-oss-120b",
-        help="GPT-OSS model to use (only for --judge gpt-oss)",
-    )
-    p.add_argument(
-        "--gpt-oss-device-map",
-        type=str,
-        default="auto",
-        help="Device map for GPT-OSS (only for --judge gpt-oss)",
-    )
-    p.add_argument(
-        "--gpt-oss-dtype",
-        type=str,
-        default="auto",
-        help="Torch dtype for GPT-OSS (only for --judge gpt-oss)",
-    )
-
-    # Judge parameters
     p.add_argument(
         "--max-tokens",
         type=int,
@@ -134,16 +86,10 @@ def parse_args():
         help="Max tokens for judge response",
     )
     p.add_argument(
-        "--temperature",
-        type=float,
-        default=0.0,
-        help="Sampling temperature for judge",
-    )
-    p.add_argument(
         "--batch-size",
         type=int,
-        default=32,
-        help="Batch size for judging (only for Gemma)",
+        default=56,
+        help="Batch size for judging",
     )
 
     return p.parse_args()
@@ -243,6 +189,16 @@ def run_judging(
     print("=" * 60)
 
 
+def get_default_model(judge_type: str) -> str:
+    """Get default model for judge type."""
+    defaults = {
+        "gemma": "google/gemma-3-4b-it",
+        "gpt4": "gpt-4",
+        "gpt-oss": "openai/gpt-oss-120b",
+    }
+    return defaults[judge_type]
+
+
 def main():
     """Main entry point."""
     args = parse_args()
@@ -252,50 +208,40 @@ def main():
     predictions = load_predictions(args.predictions)
     print(f"✓ Loaded {len(predictions)} predictions")
 
+    # Get model ID
+    model_id = args.judge_model or get_default_model(args.judge)
+
     # Initialize judge
     if args.judge == "gemma":
-        print(f"Initializing Gemma judge: {args.model}")
+        print(f"Initializing Gemma judge: {model_id}")
         from theworld import TheWorld
         from theworld.evaluation import GemmaJudge
 
-        # Load model
+        import torch
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
         model = TheWorld(
-            gemma_model_name=args.model,
-            device=args.device,
-            load_cosmos=False,  # Don't need Cosmos for judging
+            gemma_model_name=model_id,
+            device=device,
+            load_cosmos=False,
         )
         model.eval()
-        print(f"✓ Model loaded on {args.device}")
+        print(f"✓ Model loaded on {device}")
 
-        judge = GemmaJudge(
-            model=model,
-            max_new_tokens=args.max_tokens,
-            temperature=args.temperature,
-        )
+        judge = GemmaJudge(model=model, max_new_tokens=args.max_tokens)
 
     elif args.judge == "gpt4":
-        print(f"Initializing GPT-4 judge: {args.gpt_model}")
+        print(f"Initializing GPT-4 judge: {model_id}")
         from theworld.evaluation import GPT4Judge
 
-        judge = GPT4Judge(
-            api_key=args.api_key,
-            model=args.gpt_model,
-            max_tokens=args.max_tokens,
-            temperature=args.temperature,
-        )
+        judge = GPT4Judge(model=model_id, max_tokens=args.max_tokens)
         print(f"✓ GPT-4 judge initialized")
 
     elif args.judge == "gpt-oss":
-        print(f"Initializing GPT-OSS judge: {args.gpt_oss_model}")
+        print(f"Initializing GPT-OSS judge: {model_id}")
         from theworld.evaluation import GPTOSSJudge
 
-        judge = GPTOSSJudge(
-            model_id=args.gpt_oss_model,
-            max_new_tokens=args.max_tokens,
-            temperature=args.temperature,
-            device_map=args.gpt_oss_device_map,
-            torch_dtype=args.gpt_oss_dtype,
-        )
+        judge = GPTOSSJudge(model_id=model_id, max_new_tokens=args.max_tokens)
         print(f"✓ GPT-OSS judge initialized")
 
     else:

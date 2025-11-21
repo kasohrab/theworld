@@ -15,7 +15,7 @@ def create_judge_prompt(
     question: str,
     ground_truth: str,
     prediction: str,
-    judge_mode: str = "strict",
+    judge_mode: str = "official",
     qa_type: Optional[str] = None,
 ) -> str:
     """Create prompt for Gemma to judge answer correctness.

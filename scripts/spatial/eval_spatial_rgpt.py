@@ -283,8 +283,7 @@ def run_eval(
             batch_questions = [ex["messages"][0]["content"] for ex in batch_examples]
             # Extract ground truth answer (second message if exists)
             batch_ground_truths = [
-                ex["messages"][1]["content"] if len(ex["messages"]) > 1 else ""
-                for ex in batch_examples
+                ex["messages"][1]["content"] if len(ex["messages"]) > 1 else "" for ex in batch_examples
             ]
 
             # Generate answers using standard HuggingFace approach
