@@ -1,0 +1,33 @@
+====================================================================================================
+PREDICTION ANALYSIS - Model Config vs Empty Predictions
+====================================================================================================
+
+Skipping theworld-spatial-channel-justprojection-fixed-mlp: empty file
+Model                                                 Empty %     Empty/Total              Trained    Proj Mode    World
+------------------------------------------------------------------------------------------------------------------------
+theworld-spatial-channel-all                           100.0%   1406/1406     LM+Vision+VAE+Proj      channel        ✓
+theworld-spatial-channel-lmandprojection-fixed-mlp     100.0%   1406/1406                LM+Proj      channel        ✓
+theworld-spatial-gemma-vision                           48.3%    679/1406            Vision+Proj      spatial        ✗
+theworld-channel-vae-projection-2                        0.7%     10/1406               VAE+Proj      channel        ✓
+theworld-spatial-bbox-fixed                              0.7%     10/1406                   Proj            ?        ✓
+theworld-spatial-channel-2                               0.7%     10/1406                   Proj      channel        ✓
+gemma-3-4b-it                                            0.0%      0/1406             N/A (base)          N/A        ✗
+gemma-spatial-bbox-fixed                                 0.0%      0/1406         LM+Vision+Proj            ?        ✗
+
+====================================================================================================
+LEGEND:
+  Trained: LM=Language Model, Vision=SigLIP encoder, VAE=Cosmos VAE, Proj=Projection layers
+  Proj Mode: spatial (4096 tokens) or channel (16 tokens)
+  World: ✓ = TheWorld with Cosmos, ✗ = Gemma-only baseline
+====================================================================================================
+
+OBSERVATIONS:
+  Working models (<5% empty): 5
+    - theworld-channel-vae-projection-2 (VAE+Proj)
+    - theworld-spatial-bbox-fixed (Proj)
+    - theworld-spatial-channel-2 (Proj)
+    - gemma-3-4b-it (N/A (base))
+    - gemma-spatial-bbox-fixed (LM+Vision+Proj)
+  Broken models (≥50% empty): 2
+    - theworld-spatial-channel-all (LM+Vision+VAE+Proj)
+    - theworld-spatial-channel-lmandprojection-fixed-mlp (LM+Proj)
