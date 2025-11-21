@@ -3,15 +3,17 @@ Evaluate TheWorld on SpatialRGPT-Bench with Gemma-as-judge evaluation.
 
 Usage (example):
     python scripts/spatial/eval_spatial_rgpt.py \
-        --data-path /path/to/SpatialRGPT-Bench/val_SpatialRGPT-Bench.jsonl \
-        --image-folder /path/to/SpatialRGPT-Bench/images \
-        --model username/theworld-model \
+        --data-path a8cheng/SpatialRGPT-Bench \
+        --model kasohrab/theworld-spatial \
         --output outputs/spatial_rgpt_results.jsonl \
         --max-samples 10
 
+The model's configuration (world model enabled or not) is auto-detected
+from the saved checkpoint config.
+
 This script:
 1. Loads SpatialRGPT-Bench data (with bounding box visualization)
-2. Generates answers using TheWorld or Gemma baseline
+2. Generates answers using the model (TheWorld or Gemma baseline - auto-detected)
 3. Uses Gemma-as-judge to evaluate free-form answers
 4. Saves results and calculates accuracy metrics
 """
@@ -32,35 +34,24 @@ from theworld.evaluation import evaluate_with_gemma, calculate_spatial_accuracy
 
 def generate_output_filename(
     model_name: str,
-    load_cosmos: bool,
-    num_world_steps: int,
     max_samples: int,
 ) -> str:
-    """Generate a descriptive output filename based on config.
+    """Generate a descriptive output filename based on model name.
 
     Examples:
-        - spatial_bench_gemma-3-4b-it_baseline.jsonl
-        - spatial_bench_theworld-checkpoint_world-4steps.jsonl
-        - spatial_bench_gemma-3-4b-it_baseline_50samples.jsonl
+        - spatial_bench_gemma-3-4b-it.jsonl
+        - spatial_bench_theworld-checkpoint.jsonl
+        - spatial_bench_gemma-3-4b-it_50samples.jsonl
     """
     # Extract model name (strip path and special chars)
     model_slug = model_name.replace("/", "-").replace("_", "-")
     if "google-gemma" in model_slug or model_slug.startswith("gemma-"):
         model_slug = model_slug.split("google-")[-1]  # Remove google/ prefix
 
-    # Add world config
-    if load_cosmos:
-        if num_world_steps > 0:
-            config = f"world-{num_world_steps}steps"
-        else:
-            config = "world-0steps"
-    else:
-        config = "baseline"
-
     # Add sample limit if specified
     sample_suffix = f"_{max_samples}samples" if max_samples > 0 else ""
 
-    return f"outputs/spatial_bench/{model_slug}_{config}{sample_suffix}.jsonl"
+    return f"outputs/spatial_bench/{model_slug}{sample_suffix}.jsonl"
 
 
 def parse_args():
@@ -101,17 +92,6 @@ def parse_args():
         type=int,
         default=0,
         help="Max samples to evaluate (0 = all)",
-    )
-    p.add_argument(
-        "--load-cosmos",
-        action="store_true",
-        help="Load Cosmos world model (TheWorld mode). Default: Gemma-only baseline.",
-    )
-    p.add_argument(
-        "--num-world-steps",
-        type=int,
-        default=0,
-        help="Number of world prediction steps (only if --load-cosmos)",
     )
     p.add_argument(
         "--draw-bboxes",
@@ -171,8 +151,6 @@ def run_eval(
     device: str,
     output_path: str,
     max_samples: int,
-    load_cosmos: bool,
-    num_world_steps: int,
     draw_bboxes: bool,
     max_new_tokens: int,
     temperature: float,
@@ -186,12 +164,10 @@ def run_eval(
     Args:
         data_path: Path to JSONL file
         image_folder: Base folder for images
-        model_name: Model to evaluate
+        model_name: Model to evaluate (HF model ID - config auto-detected)
         device: Device to run on
         output_path: Output path for results
         max_samples: Max samples (0 = all)
-        load_cosmos: Whether to load Cosmos (TheWorld mode)
-        num_world_steps: Number of world steps
         draw_bboxes: Whether to draw bounding boxes
         max_new_tokens: Max tokens per answer
         temperature: Sampling temperature
@@ -238,18 +214,20 @@ def run_eval(
         )
     print(f"✓ Loaded {len(ds)} samples")
 
-    # Load model
-    mode_str = "TheWorld" if load_cosmos else "Gemma-only baseline"
-    print(f"Loading model ({mode_str}): {model_name}")
+    # Load model (config auto-detected from saved checkpoint)
+    print(f"Loading model: {model_name}")
 
     model = TheWorld.from_pretrained(
         model_name,
-        enable_world=load_cosmos,
         dtype=torch.bfloat16,
         device_map="auto" if device == "cuda" else device,
     )
     model.eval()
-    print(f"✓ Model loaded in evaluation mode")
+
+    # Report model mode from loaded config
+    enable_world = getattr(model.config, "enable_world", False)
+    mode_str = "TheWorld (world model enabled)" if enable_world else "Gemma-only baseline"
+    print(f"✓ Model loaded: {mode_str}")
 
     # Prepare output
     output_file = Path(output_path)
@@ -482,9 +460,7 @@ def run_eval(
             f.write("=" * 60 + "\n")
             f.write(f"Model: {model_name}\n")
             f.write(f"Batch Size: {batch_size}\n")
-            f.write(f"Load Cosmos: {load_cosmos}\n")
-            if load_cosmos:
-                f.write(f"World Steps: {num_world_steps}\n")
+            f.write(f"World Model Enabled: {enable_world}\n")
             f.write(f"Results File: {output_path}\n")
             f.write("\n")
 
@@ -546,8 +522,6 @@ def main():
     if output_path is None:
         output_path = generate_output_filename(
             model_name=args.model,
-            load_cosmos=args.load_cosmos,
-            num_world_steps=args.num_world_steps,
             max_samples=args.max_samples,
         )
         print(f"Auto-generated output path: {output_path}")
@@ -567,8 +541,6 @@ def main():
         device=args.device,
         output_path=output_path,
         max_samples=args.max_samples,
-        load_cosmos=args.load_cosmos,
-        num_world_steps=args.num_world_steps,
         draw_bboxes=args.draw_bboxes,
         max_new_tokens=args.max_new_tokens,
         temperature=args.temperature,
