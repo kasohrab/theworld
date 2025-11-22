@@ -1,0 +1,11 @@
+{
+  "gpt-oss": {
+    "total": 1406,
+    "correct": 13,
+    "accuracy": 0.009246088193456615,
+    "by_type": {
+      "qualitative": 0.0,
+      "quantitative": 0.017356475300400534
+    }
+  }
+}
