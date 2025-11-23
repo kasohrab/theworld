@@ -56,6 +56,12 @@ def parse_args():
     )
     p.add_argument("--max-samples", type=int, default=0, help="Max samples per model (0=all)")
     p.add_argument("--batch-size", type=int, default=32, help="Batch size for evaluation (default: 32)")
+    p.add_argument(
+        "--min-new-tokens",
+        type=int,
+        default=0,
+        help="Minimum number of tokens to generate (default: 0, no minimum)",
+    )
     p.add_argument("--dry-run", action="store_true", help="Print what would be run without executing")
     return p.parse_args()
 
@@ -121,6 +127,9 @@ def main():
 
         if args.max_samples > 0:
             cmd.extend(["--max-samples", str(args.max_samples)])
+
+        if args.min_new_tokens > 0:
+            cmd.extend(["--min-new-tokens", str(args.min_new_tokens)])
 
         if args.dry_run:
             print(f"  Would run: {' '.join(cmd)}")

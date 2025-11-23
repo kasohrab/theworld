@@ -106,6 +106,12 @@ def parse_args():
         help="Max tokens to generate per answer",
     )
     p.add_argument(
+        "--min-new-tokens",
+        type=int,
+        default=0,
+        help="Minimum number of tokens to generate (default: 0, no minimum)",
+    )
+    p.add_argument(
         "--temperature",
         type=float,
         default=0.0,
@@ -153,6 +159,7 @@ def run_eval(
     max_samples: int,
     draw_bboxes: bool,
     max_new_tokens: int,
+    min_new_tokens: int,
     temperature: float,
     batch_size: int = 1,
     save_visualizations: bool = False,
@@ -288,7 +295,12 @@ def run_eval(
                 # Generate (HuggingFace handles batching) - always use greedy decoding
                 input_length = inputs["input_ids"].shape[1]
                 with torch.no_grad():
-                    outputs = model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False)
+                    outputs = model.generate(
+                        **inputs,
+                        max_new_tokens=max_new_tokens,
+                        min_new_tokens=min_new_tokens,
+                        do_sample=False,
+                    )
 
                 # Decode only the newly generated tokens (skip input prompt)
                 batch_predictions = []
@@ -543,6 +555,7 @@ def main():
         max_samples=args.max_samples,
         draw_bboxes=args.draw_bboxes,
         max_new_tokens=args.max_new_tokens,
+        min_new_tokens=args.min_new_tokens,
         temperature=args.temperature,
         batch_size=args.batch_size,
         save_visualizations=args.save_visualizations,

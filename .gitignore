@@ -223,7 +223,7 @@ checkpoints/
 /logs
 outputs/*
 !outputs/spatial_bench/
-!outputs/spatial_results/
+!outputs/spatial_results*/
 data/result_10_depth_convs.json
 data/images
 data/llava-cc3m

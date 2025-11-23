@@ -10,6 +10,8 @@
 #   --time HH:MM:SS      Time limit (default: 4:00:00)
 #   --mem SIZE           Memory allocation (default: 128G)
 #   --max-samples N      Max samples per model (default: 0 = all)
+#   --min-new-tokens N   Minimum tokens to generate (default: 0 = no minimum)
+#   --output-dir PATH    Output directory (default: outputs/spatial_results)
 #   <models.txt>         Text file with HuggingFace model IDs (one per line) - REQUIRED
 #
 
@@ -20,6 +22,8 @@ GPU_TYPE="H100"
 EMAIL="ksohrab3@gatech.edu"
 MODELS_FILE=""
 MAX_SAMPLES=0
+MIN_NEW_TOKENS=0
+OUTPUT_DIR=""
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -36,6 +40,14 @@ while [[ $# -gt 0 ]]; do
             MAX_SAMPLES="$2"
             shift 2
             ;;
+        --min-new-tokens)
+            MIN_NEW_TOKENS="$2"
+            shift 2
+            ;;
+        --output-dir)
+            OUTPUT_DIR="$2"
+            shift 2
+            ;;
         --help)
             echo "Usage: sbatch scripts/spatial/eval_slurm.sh [OPTIONS] <models.txt>"
             echo ""
@@ -46,10 +58,14 @@ while [[ $# -gt 0 ]]; do
             echo "  --time HH:MM:SS      Time limit (default: 4:00:00)"
             echo "  --mem SIZE           Memory allocation (default: 128G)"
             echo "  --max-samples N      Max samples per model (default: 0 = all)"
+            echo "  --min-new-tokens N   Minimum tokens to generate (default: 0 = no minimum)"
+            echo "  --output-dir PATH    Output directory (default: outputs/spatial_results)"
             echo ""
             echo "Examples:"
             echo "  sbatch scripts/spatial/eval_slurm.sh models.txt"
             echo "  sbatch scripts/spatial/eval_slurm.sh --time 8:00:00 --max-samples 100 models.txt"
+            echo "  sbatch scripts/spatial/eval_slurm.sh --min-new-tokens 10 models.txt"
+            echo "  sbatch scripts/spatial/eval_slurm.sh --output-dir results/experiment1 models.txt"
             exit 0
             ;;
         -*)
@@ -88,6 +104,8 @@ mkdir -p "$LOG_DIR"
 # Export for worker
 export MODELS_FILE
 export MAX_SAMPLES
+export MIN_NEW_TOKENS
+export OUTPUT_DIR
 
 echo "============================================================"
 echo "SpatialRGPT Batch Evaluation - SLURM Job Submission"
@@ -98,6 +116,8 @@ echo "Memory: $MEMORY"
 echo "Time Limit: $TIME_LIMIT"
 echo "Models File: $MODELS_FILE"
 echo "Max Samples: $MAX_SAMPLES (0 = all)"
+echo "Min New Tokens: $MIN_NEW_TOKENS (0 = no minimum)"
+echo "Output Dir: ${OUTPUT_DIR:-outputs/spatial_results (default)}"
 echo "Log: ${LOG_DIR}/${JOB_NAME}-<jobid>.out"
 echo "============================================================"
 echo ""
@@ -142,6 +162,12 @@ echo ""
 CMD="python scripts/spatial/batch_eval.py $MODELS_FILE"
 if [ "$MAX_SAMPLES" -gt 0 ]; then
     CMD="$CMD --max-samples $MAX_SAMPLES"
+fi
+if [ "$MIN_NEW_TOKENS" -gt 0 ]; then
+    CMD="$CMD --min-new-tokens $MIN_NEW_TOKENS"
+fi
+if [ -n "$OUTPUT_DIR" ]; then
+    CMD="$CMD --output-dir $OUTPUT_DIR"
 fi
 
 echo "Running: $CMD"

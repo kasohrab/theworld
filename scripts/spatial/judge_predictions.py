@@ -69,7 +69,7 @@ def parse_args():
     p.add_argument(
         "--judge",
         type=str,
-        choices=["gemma", "gpt4", "gpt-oss"],
+        choices=["gemma", "gpt4", "gpt-oss", "deepseek"],
         required=True,
         help="Judge model to use",
     )
@@ -82,7 +82,7 @@ def parse_args():
     p.add_argument(
         "--max-tokens",
         type=int,
-        default=50,
+        default=150,
         help="Max tokens for judge response",
     )
     p.add_argument(
@@ -90,6 +90,12 @@ def parse_args():
         type=int,
         default=56,
         help="Batch size for judging",
+    )
+    p.add_argument(
+        "--cache-dir",
+        type=str,
+        default="/tmp/hf_cache",
+        help="Directory to cache model weights (default: /tmp/hf_cache)",
     )
 
     return p.parse_args()
@@ -175,6 +181,11 @@ def run_judging(
     print(f"  Correct: {metrics['correct']}")
     print(f"  Accuracy: {metrics['accuracy']:.4f} ({metrics['accuracy']*100:.2f}%)")
 
+    # Print metadata
+    print(f"\nJudge Metadata:")
+    print(f"  Judge Type: {judge.__class__.__name__}")
+    print(f"  Judge Model: {getattr(judge, 'model_id', getattr(judge, 'model', 'N/A'))}")
+
     if metrics["by_type"]:
         print(f"\nBy Question Type:")
         for qa_type, acc in metrics["by_type"].items():
@@ -195,6 +206,7 @@ def get_default_model(judge_type: str) -> str:
         "gemma": "google/gemma-3-4b-it",
         "gpt4": "gpt-4",
         "gpt-oss": "openai/gpt-oss-120b",
+        "deepseek": "deepseek-chat",
     }
     return defaults[judge_type]
 
@@ -239,10 +251,25 @@ def main():
 
     elif args.judge == "gpt-oss":
         print(f"Initializing GPT-OSS judge: {model_id}")
+        print(f"Cache directory: {args.cache_dir}")
         from theworld.evaluation import GPTOSSJudge
 
-        judge = GPTOSSJudge(model_id=model_id, max_new_tokens=args.max_tokens)
+        judge = GPTOSSJudge(
+            model_id=model_id,
+            max_new_tokens=args.max_tokens,
+            cache_dir=args.cache_dir,
+        )
         print(f"✓ GPT-OSS judge initialized")
+
+    elif args.judge == "deepseek":
+        print(f"Initializing DeepSeek judge: {model_id}")
+        from theworld.evaluation import DeepSeekJudge
+
+        judge = DeepSeekJudge(
+            model=model_id,
+            max_tokens=args.max_tokens,
+        )
+        print(f"✓ DeepSeek judge initialized")
 
     else:
         raise ValueError(f"Unknown judge: {args.judge}")

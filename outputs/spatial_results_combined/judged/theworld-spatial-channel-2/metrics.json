@@ -1,0 +1,17 @@
+{
+  "deepseek--deepseek-chat": {
+    "total": 1406,
+    "correct": 338,
+    "accuracy": 0.24039829302987198,
+    "by_type": {
+      "qualitative": 0.4277016742770167,
+      "quantitative": 0.07610146862483311
+    },
+    "metadata": {
+      "judge_type": "deepseek",
+      "judge_model": "deepseek-chat",
+      "timestamp": "2025-11-23T01:52:33.602592",
+      "batch_size": 64
+    }
+  }
+}

@@ -13,16 +13,18 @@
 #   --judge TYPE         Judge type: gpt-oss, gemma, gpt4 (default: gpt-oss)
 #   --judge-model ID     Judge model ID (default: openai/gpt-oss-20b)
 #   --batch-size N       Batch size for judging (default: 56)
+#   --output-dir PATH    Output directory (default: outputs/spatial_results)
 #
 
 # Defaults
 TIME_LIMIT="4:00:00"
-MEMORY="128G"
-GPU_TYPE="H100"
+MEMORY="256G"
+GPU_TYPE="H200"
 EMAIL="ksohrab3@gatech.edu"
 JUDGE="gpt-oss"
 JUDGE_MODEL="openai/gpt-oss-20b"
-BATCH_SIZE=56
+BATCH_SIZE=50
+OUTPUT_DIR=""
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -47,6 +49,10 @@ while [[ $# -gt 0 ]]; do
             BATCH_SIZE="$2"
             shift 2
             ;;
+        --output-dir)
+            OUTPUT_DIR="$2"
+            shift 2
+            ;;
         --help)
             echo "Usage: sbatch scripts/spatial/judge_slurm.sh [OPTIONS]"
             echo ""
@@ -56,11 +62,13 @@ while [[ $# -gt 0 ]]; do
             echo "  --judge TYPE         Judge type: gpt-oss, gemma, gpt4 (default: gpt-oss)"
             echo "  --judge-model ID     Judge model ID (default: openai/gpt-oss-20b)"
             echo "  --batch-size N       Batch size for judging (default: 56)"
+            echo "  --output-dir PATH    Output directory (default: outputs/spatial_results)"
             echo ""
             echo "Examples:"
             echo "  sbatch scripts/spatial/judge_slurm.sh"
             echo "  sbatch scripts/spatial/judge_slurm.sh --judge gemma"
             echo "  sbatch scripts/spatial/judge_slurm.sh --time 8:00:00 --batch-size 32"
+            echo "  sbatch scripts/spatial/judge_slurm.sh --output-dir results/exp1"
             exit 0
             ;;
         -*)
@@ -87,6 +95,7 @@ mkdir -p "$LOG_DIR"
 export JUDGE
 export JUDGE_MODEL
 export BATCH_SIZE
+export OUTPUT_DIR
 
 echo "============================================================"
 echo "SpatialRGPT Batch Judging - SLURM Job Submission"
@@ -97,6 +106,7 @@ echo "Memory: $MEMORY"
 echo "Time Limit: $TIME_LIMIT"
 echo "Judge: $JUDGE ($JUDGE_MODEL)"
 echo "Batch Size: $BATCH_SIZE"
+echo "Output Dir: ${OUTPUT_DIR:-outputs/spatial_results (default)}"
 echo "Log: ${LOG_DIR}/${JOB_NAME}-<jobid>.out"
 echo "============================================================"
 echo ""
@@ -107,7 +117,7 @@ sbatch \
     --nodes=1 \
     --ntasks-per-node=1 \
     --gres="gpu:${GPU_TYPE}:1" \
-    --cpus-per-gpu=4 \
+    --cpus-per-gpu=16 \
     --mem="$MEMORY" \
     --time="$TIME_LIMIT" \
     --output="${LOG_DIR}/${JOB_NAME}-%j.out" \
@@ -126,7 +136,7 @@ echo "============================================================"
 source scripts/slurm/common_setup.sh
 
 # Show what will be judged
-PREDICTIONS_DIR="outputs/spatial_results/predictions"
+PREDICTIONS_DIR="${OUTPUT_DIR:-outputs/spatial_results}/predictions"
 if [ -d "$PREDICTIONS_DIR" ]; then
     echo "Predictions directory: $PREDICTIONS_DIR"
     echo "Prediction files found:"
@@ -140,6 +150,9 @@ echo ""
 
 # Build command
 CMD="python scripts/spatial/batch_judge.py --judge $JUDGE --judge-model $JUDGE_MODEL --batch-size $BATCH_SIZE"
+if [ -n "$OUTPUT_DIR" ]; then
+    CMD="$CMD --output-dir $OUTPUT_DIR"
+fi
 
 echo "Running: $CMD"
 echo "============================================================"
