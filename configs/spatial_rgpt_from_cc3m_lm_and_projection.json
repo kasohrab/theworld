@@ -53,7 +53,7 @@
 
   "hf_token": null,
   "push_to_hub": true,
-  "hub_model_id": "alwinjin8/theworld-spatial-from-cc3m-lm-only",
+  "hub_model_id": "kasohrab/theworld-spatial-from-cc3m-lm-only",
   "hub_strategy": "every_save",
   "hub_private_repo": false
 }

@@ -472,12 +472,26 @@ def main():
 
     # Resolve checkpoint path if resuming (supports both local paths and Hub model IDs)
     resume_checkpoint = None
+    trainer_resume_checkpoint = None  # Separate variable for trainer.train() - may differ from resume_checkpoint
     if config.resume_from_checkpoint:
         print(f"\nResolving checkpoint path: {config.resume_from_checkpoint}")
         resume_checkpoint = resolve_checkpoint_path(config.resume_from_checkpoint, hf_token=config.hf_token)
 
         if resume_checkpoint and os.path.exists(resume_checkpoint):
             print(f"✓ Checkpoint found: {resume_checkpoint}")
+
+            # Check if this is a full training checkpoint or just model weights
+            # Full checkpoint has trainer_state.json (for resuming interrupted training)
+            # Weights-only checkpoint is for stage transitions (start fresh training)
+            trainer_state_path = os.path.join(resume_checkpoint, "trainer_state.json")
+            if os.path.exists(trainer_state_path):
+                print(f"✓ Full training checkpoint (has trainer_state.json)")
+                print(f"  Will resume from saved step/epoch")
+                trainer_resume_checkpoint = resume_checkpoint
+            else:
+                print(f"✓ Weights-only checkpoint (no trainer_state.json)")
+                print(f"  Stage transition: loading weights, starting fresh training (epoch 0, step 0)")
+                trainer_resume_checkpoint = None  # Don't pass to trainer.train()
         else:
             print(f"⚠ Checkpoint not found: {config.resume_from_checkpoint}")
             print(f"  Starting fresh training instead")
@@ -672,11 +686,13 @@ def main():
     print("=" * 60)
 
     # Wrap training with profiler context if enabled
+    # Note: trainer_resume_checkpoint is only set if trainer_state.json exists (full resume)
+    # For stage transitions (weights-only), it's None so training starts fresh
     if profiler_context is not None:
         with profiler_context:
-            trainer.train(resume_from_checkpoint=resume_checkpoint)
+            trainer.train(resume_from_checkpoint=trainer_resume_checkpoint)
     else:
-        trainer.train(resume_from_checkpoint=resume_checkpoint)
+        trainer.train(resume_from_checkpoint=trainer_resume_checkpoint)
 
     # Save final model
     print(f"\nSaving final model to {config.output_dir}/final")
