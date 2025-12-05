@@ -502,10 +502,15 @@ def main():
 
     if resume_checkpoint:
         # Resume from checkpoint using TheWorld.from_checkpoint()
+        # Pass freeze settings from training config to allow stage transitions
+        # (e.g., resume from projection-only checkpoint, now unfreeze LM)
         print(f"  Loading from checkpoint: {resume_checkpoint}")
         model = TheWorld.from_checkpoint(
             checkpoint_path=resume_checkpoint,
             torch_dtype=torch.bfloat16 if config.mixed_precision == "bf16" else torch.float32,
+            freeze_gemma_vision=config.freeze_gemma_vision,
+            freeze_gemma_language=config.freeze_gemma_language,
+            freeze_cosmos_vae=config.freeze_cosmos_vae,
         )
     else:
         # Fresh initialization from base pretrained models

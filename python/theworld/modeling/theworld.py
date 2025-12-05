@@ -317,19 +317,25 @@ class TheWorld(Gemma3ForConditionalGeneration):
             raise ValueError(f"Checkpoint path does not exist: {checkpoint_path}")
 
         # Load config to get base model names and settings
-        config = TheWorldConfig.from_pretrained(checkpoint_path)
+        checkpoint_config = TheWorldConfig.from_pretrained(checkpoint_path)
+
+        # Allow freeze overrides from kwargs, fallback to checkpoint config
+        # This enables stage transitions (e.g., resume from projection-only checkpoint, now unfreeze LM)
+        freeze_gemma_vision = kwargs.pop("freeze_gemma_vision", checkpoint_config.freeze_gemma_vision)
+        freeze_gemma_language = kwargs.pop("freeze_gemma_language", checkpoint_config.freeze_gemma_language)
+        freeze_cosmos_vae = kwargs.pop("freeze_cosmos_vae", checkpoint_config.freeze_cosmos_vae)
 
         # Stage 1: Initialize from base models (gets all weights, no meta tensors)
         model = cls.from_pretrained(
-            config.gemma_model_name,
+            checkpoint_config.gemma_model_name,
             device=device,
-            enable_world=config.enable_world,
-            cosmos_model_name=config.cosmos_model_name,
-            world_projection_mode=config.world_projection_mode,
-            projection_architecture=getattr(config, "projection_architecture", "mlp"),
-            freeze_gemma_vision=config.freeze_gemma_vision,
-            freeze_gemma_language=config.freeze_gemma_language,
-            freeze_cosmos_vae=config.freeze_cosmos_vae,
+            enable_world=checkpoint_config.enable_world,
+            cosmos_model_name=checkpoint_config.cosmos_model_name,
+            world_projection_mode=checkpoint_config.world_projection_mode,
+            projection_architecture=getattr(checkpoint_config, "projection_architecture", "mlp"),
+            freeze_gemma_vision=freeze_gemma_vision,
+            freeze_gemma_language=freeze_gemma_language,
+            freeze_cosmos_vae=freeze_cosmos_vae,
             **kwargs,
         )
 

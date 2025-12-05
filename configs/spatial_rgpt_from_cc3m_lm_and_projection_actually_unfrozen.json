@@ -1,5 +1,5 @@
 {
-  "_comment": "Stage 2 training: Continue from CC3M alignment checkpoint, still frozen LM on SpatialRGPT",
+  "_comment": "Stage 2 training: Continue from CC3M alignment checkpoint, now unfreeze LM on SpatialRGPT",
 
   "model_name": "google/gemma-3-4b-it",
   "cosmos_model_name": "nvidia/Cosmos-Predict2-2B-Video2World",
@@ -7,7 +7,7 @@
   "world_projection_mode": "channel",
   "projection_architecture": "mlp",
   "freeze_gemma_vision": true,
-  "freeze_gemma_language": true,
+  "freeze_gemma_language": false,
   "freeze_cosmos_vae": true,
 
   "learning_rate": 0.0001,
@@ -21,10 +21,10 @@
   "use_gradient_checkpointing": false,
   "mixed_precision": "bf16",
 
-  "output_dir": "./checkpoints/theworld-spatial-from-cc3m-lm-only",
+  "output_dir": "./checkpoints/theworld-spatial-from-cc3m-lm-actually-unfrozen",
   "save_steps": 1000,
   "save_total_limit": 1,
-  "resume_from_checkpoint": "./checkpoints/theworld-spatial-from-cc3m-lm-only",
+  "resume_from_checkpoint": "./checkpoints/theworld-spatial-from-cc3m-lm-actually-unfrozen",
 
   "eval_steps": 5000,
   "eval_batch_size": 8,
@@ -53,7 +53,7 @@
 
   "hf_token": null,
   "push_to_hub": true,
-  "hub_model_id": "kasohrab/theworld-spatial-from-cc3m-lm-only",
+  "hub_model_id": "kasohrab/theworld-spatial-from-cc3m-lm-actually-unfrozen",
   "hub_strategy": "every_save",
   "hub_private_repo": false
 }
