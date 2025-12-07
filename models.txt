@@ -7,3 +7,5 @@ kasohrab/theworld-spatial-channel-2
 kasohrab/theworld-spatial-gemma-vision
 kasohrab/gemma-spatial-bbox-fixed
 google/gemma-3-4b-it
+kasohrab/theworld-spatial-from-cc3m-lm-actually-unfrozen
+kasohrab/theworld-spatial-from-cc3m-lm-only

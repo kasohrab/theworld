@@ -793,7 +793,7 @@ Response: {prediction}
 Instructions:
 - Extract the numeric value in METERS from the correct answer
 - Extract the numeric value in METERS from the model's response
-- Convert to meters if needed (e.g., "5 feet" → 1.524 meters, "2 km" → 2000 meters)
+- Convert to meters if needed (1 inch = 0.0254 meters. 1 foot = 0.3048 meters. 1 centimeter (cm) = 0.01 meters.)
 - If no measurement is present, use null
 
 Output your judgment as JSON in this exact format:
