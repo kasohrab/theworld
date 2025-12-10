@@ -1,2 +1,0 @@
-kasohrab/theworld-spatial-channel-lmandprojection-fixed-mlp
-kasohrab/theworld-spatial-channel-all
