@@ -1,3 +1,4 @@
+Rough in some places codebase but was our CS8803 VLM project.
 # 🌍 TheWorld
 
 **A Fused Vision-Language-World Model for Temporal Reasoning**
