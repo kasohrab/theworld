@@ -267,17 +267,6 @@ Combined: [BOS, SOW, WORLD�784, EOW, TEXT, IMAGE�256]
 - [Multi-Stage Training](docs/multi_stage_training.md) - Progressive training workflow
 - [Evaluation Guide](docs/evaluation.md) - Evaluation on BLINK benchmark
 
-## Citation
-
-```bibtex
-@misc{theworld2025,
-  title={TheWorld: Fused Vision-Language-World Model},
-  author={Your Name},
-  year={2025},
-  url={https://github.com/yourusername/theworld}
-}
-```
-
 ## License
 
 [Add your license here]
