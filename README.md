@@ -3,7 +3,7 @@ Rough in some places codebase but was our CS8803 VLM project.
 
 **A Fused Vision-Language-World Model for Temporal Reasoning**
 
-TheWorld combines the power of **Google Gemma 3** (vision-language understanding) with **NVIDIA Cosmos** (world dynamics modeling) to create a model that doesn't just see and understand—it reasons about *what will happen next*.
+TheWorld combines the power of **Google Gemma 3** (vision-language understanding) with **NVIDIA Cosmos** (world dynamics modeling). Experiments with early fusion of Cosmos VAE World Model embeddings with a language model.
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-ee4c2c.svg)](https://pytorch.org/)
@@ -266,10 +266,6 @@ Combined: [BOS, SOW, WORLD�784, EOW, TEXT, IMAGE�256]
 - [Hub Upload Guide](docs/huggingface_hub_upload.md) - Publishing models to HuggingFace Hub
 - [Multi-Stage Training](docs/multi_stage_training.md) - Progressive training workflow
 - [Evaluation Guide](docs/evaluation.md) - Evaluation on BLINK benchmark
-
-## License
-
-[Add your license here]
 
 ## Acknowledgments
 
